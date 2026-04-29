@@ -1,0 +1,19 @@
+service: route53
+client: route53
+display_name: Route 53
+
+operations:
+  - name: Hosted Zones
+    method: list_hosted_zones
+    paginator: true
+    result_key: HostedZones
+    id_field: Id
+    name_field: Name
+    key_prefix: r53
+    dr_note: "Hosted zones are global but records must be updated to point to DR endpoints."
+    config_fields:
+      - Id
+      - Name
+      - CallerReference
+      - Config.PrivateZone
+      - ResourceRecordSetCount

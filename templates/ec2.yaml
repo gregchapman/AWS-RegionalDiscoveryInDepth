@@ -1,0 +1,29 @@
+service: ec2
+client: ec2
+display_name: EC2 Instances
+
+operations:
+  - name: EC2 Instances
+    method: describe_instances
+    paginator: true
+    result_key: Reservations
+    unwrap_key: Instances
+    id_field: InstanceId
+    tag_name: true
+    key_prefix: ec2
+    dr_note: "AMI must exist in DR region. EIPs are region-specific."
+    skip_if:
+      State.Name: [terminated]
+    config_fields:
+      - InstanceId
+      - InstanceType
+      - ImageId
+      - KeyName
+      - SubnetId
+      - VpcId
+      - PrivateIpAddress
+      - PublicIpAddress
+      - IamInstanceProfile.Arn
+      - State.Name
+      - SecurityGroups[].GroupId
+      - Placement.AvailabilityZone

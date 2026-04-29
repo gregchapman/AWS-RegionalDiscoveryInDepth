@@ -1,0 +1,20 @@
+service: events
+client: events
+display_name: EventBridge Rules
+
+operations:
+  - name: EventBridge Rules
+    method: list_rules
+    paginator: true
+    result_key: Rules
+    id_field: Arn
+    name_field: Name
+    key_prefix: event
+    dr_note: "Rule targets reference region-specific ARNs. Must recreate with DR targets."
+    config_fields:
+      - Name
+      - Arn
+      - State
+      - Description
+      - ScheduleExpression
+      - EventPattern

@@ -1,0 +1,16 @@
+service: s3
+client: s3
+display_name: S3 Buckets
+
+operations:
+  - name: S3 Buckets
+    method: list_buckets
+    paginator: false
+    result_key: Buckets
+    id_field: Name
+    name_field: Name
+    key_prefix: s3
+    dr_note: "Bucket data is regional. Enable CRR for buckets needed in DR. Lambda code buckets are critical."
+    config_fields:
+      - Name
+      - CreationDate

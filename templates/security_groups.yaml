@@ -1,0 +1,20 @@
+service: ec2-sg
+client: ec2
+display_name: Security Groups
+
+operations:
+  - name: Security Groups
+    method: describe_security_groups
+    paginator: true
+    result_key: SecurityGroups
+    id_field: GroupId
+    name_field: GroupName
+    key_prefix: sg
+    dr_note: "SG IDs change in DR — cross-SG references must be remapped."
+    config_fields:
+      - GroupId
+      - GroupName
+      - Description
+      - VpcId
+      - IpPermissions
+      - IpPermissionsEgress

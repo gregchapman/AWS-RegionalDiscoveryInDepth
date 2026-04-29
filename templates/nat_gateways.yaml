@@ -1,0 +1,22 @@
+service: natgw
+client: ec2
+display_name: NAT Gateways
+
+operations:
+  - name: NAT Gateways
+    method: describe_nat_gateways
+    paginator: true
+    result_key: NatGateways
+    id_field: NatGatewayId
+    tag_name: true
+    key_prefix: nat
+    dr_note: "EIPs are region-specific. New allocation needed in DR."
+    skip_if:
+      State: [deleted]
+    config_fields:
+      - NatGatewayId
+      - VpcId
+      - SubnetId
+      - ConnectivityType
+      - State
+      - NatGatewayAddresses

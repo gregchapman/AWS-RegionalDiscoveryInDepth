@@ -1,0 +1,44 @@
+service: elbv2
+client: elbv2
+display_name: Load Balancers (ALB/NLB)
+
+operations:
+  - name: Load Balancers
+    method: describe_load_balancers
+    paginator: true
+    result_key: LoadBalancers
+    id_field: LoadBalancerArn
+    name_field: LoadBalancerName
+    key_prefix: elb
+    dr_note: "ACM certs are region-specific. Target instance IDs will differ."
+    config_fields:
+      - LoadBalancerName
+      - LoadBalancerArn
+      - Type
+      - Scheme
+      - VpcId
+      - AvailabilityZones
+      - SecurityGroups
+      - State.Code
+
+  - name: Target Groups
+    method: describe_target_groups
+    paginator: true
+    result_key: TargetGroups
+    id_field: TargetGroupArn
+    name_field: TargetGroupName
+    key_prefix: tg
+    dr_note: "Target IDs (instance IDs) will differ in DR."
+    config_fields:
+      - TargetGroupName
+      - TargetGroupArn
+      - Protocol
+      - Port
+      - VpcId
+      - TargetType
+      - HealthCheckProtocol
+      - HealthCheckPort
+      - HealthCheckPath
+      - HealthCheckIntervalSeconds
+      - HealthyThresholdCount
+      - UnhealthyThresholdCount

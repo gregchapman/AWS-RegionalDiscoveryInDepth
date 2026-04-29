@@ -1,0 +1,25 @@
+service: lambda
+client: lambda
+display_name: Lambda Functions
+
+operations:
+  - name: Lambda Functions
+    method: list_functions
+    paginator: true
+    result_key: Functions
+    id_field: FunctionArn
+    name_field: FunctionName
+    key_prefix: lambda
+    dr_note: "Code must be in an S3 bucket in the DR region. IAM roles are global but may reference regional resources."
+    config_fields:
+      - FunctionName
+      - FunctionArn
+      - Runtime
+      - Handler
+      - Role
+      - MemorySize
+      - Timeout
+      - CodeSize
+      - Architectures
+      - VpcConfig.SubnetIds
+      - VpcConfig.SecurityGroupIds

@@ -1,0 +1,43 @@
+service: elasticache
+client: elasticache
+display_name: ElastiCache
+
+operations:
+  - name: ElastiCache Clusters
+    method: describe_cache_clusters
+    paginator: true
+    result_key: CacheClusters
+    id_field: CacheClusterId
+    name_field: CacheClusterId
+    key_prefix: elasticache
+    dr_note: "Redis/Valkey: use Global Datastore or rebuild. Memcached: rebuild from config."
+    kwargs:
+      ShowCacheNodeInfo: true
+    config_fields:
+      - CacheClusterId
+      - Engine
+      - EngineVersion
+      - CacheNodeType
+      - NumCacheNodes
+      - CacheSubnetGroupName
+      - CacheParameterGroup.CacheParameterGroupName
+      - SecurityGroups[].SecurityGroupId
+      - AtRestEncryptionEnabled
+      - TransitEncryptionEnabled
+
+  - name: ElastiCache Replication Groups
+    method: describe_replication_groups
+    paginator: true
+    result_key: ReplicationGroups
+    id_field: ReplicationGroupId
+    name_field: Description
+    key_prefix: elasticache-rg
+    dr_note: "Replication group config needed to recreate cluster topology in DR."
+    config_fields:
+      - ReplicationGroupId
+      - Description
+      - Status
+      - MemberClusters
+      - AutomaticFailover
+      - MultiAZ
+      - NodeGroups

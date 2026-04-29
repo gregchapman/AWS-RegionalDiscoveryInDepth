@@ -1,0 +1,25 @@
+service: cloudwatch
+client: cloudwatch
+display_name: CloudWatch Alarms
+
+operations:
+  - name: CloudWatch Alarms
+    method: describe_alarms
+    paginator: true
+    result_key: MetricAlarms
+    id_field: AlarmArn
+    name_field: AlarmName
+    key_prefix: alarm
+    dr_note: "Alarm actions reference region-specific ARNs (SNS, Lambda). Must remap."
+    config_fields:
+      - AlarmName
+      - AlarmArn
+      - MetricName
+      - Namespace
+      - Statistic
+      - Period
+      - EvaluationPeriods
+      - Threshold
+      - ComparisonOperator
+      - AlarmActions
+      - Dimensions

@@ -1,0 +1,30 @@
+service: rds
+client: rds
+display_name: RDS Instances
+
+operations:
+  - name: RDS Instances
+    method: describe_db_instances
+    paginator: true
+    result_key: DBInstances
+    id_field: DBInstanceIdentifier
+    name_field: DBInstanceIdentifier
+    key_prefix: rds
+    dr_note: "Snapshot copy or read replica for data. Param/option groups must exist in DR."
+    config_fields:
+      - DBInstanceIdentifier
+      - DBInstanceClass
+      - Engine
+      - EngineVersion
+      - MasterUsername
+      - Endpoint.Address
+      - Endpoint.Port
+      - AllocatedStorage
+      - StorageType
+      - StorageEncrypted
+      - KmsKeyId
+      - MultiAZ
+      - DBSubnetGroup.DBSubnetGroupName
+      - VpcSecurityGroups[].VpcSecurityGroupId
+      - DBParameterGroups[].DBParameterGroupName
+      - BackupRetentionPeriod

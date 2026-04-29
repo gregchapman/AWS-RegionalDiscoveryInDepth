@@ -1,0 +1,20 @@
+service: ssm
+client: ssm
+display_name: SSM Parameters
+
+operations:
+  - name: SSM Parameters
+    method: describe_parameters
+    paginator: true
+    result_key: Parameters
+    id_field: Name
+    name_field: Name
+    key_prefix: ssm
+    dr_note: "Values NOT exported (may contain secrets). Recreate manually in DR. SecureString uses region-specific KMS."
+    config_fields:
+      - Name
+      - Type
+      - Description
+      - KeyId
+      - LastModifiedDate
+      - Version

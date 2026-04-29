@@ -1,0 +1,15 @@
+service: sns
+client: sns
+display_name: SNS Topics
+
+operations:
+  - name: SNS Topics
+    method: list_topics
+    paginator: true
+    result_key: Topics
+    id_field: TopicArn
+    name_field: TopicArn
+    key_prefix: sns
+    dr_note: "Topic ARNs are region-specific. Subscriptions must be recreated."
+    config_fields:
+      - TopicArn

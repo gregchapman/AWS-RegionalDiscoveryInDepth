@@ -1,0 +1,21 @@
+service: acm
+client: acm
+display_name: ACM Certificates
+
+operations:
+  - name: ACM Certificates
+    method: list_certificates
+    paginator: true
+    result_key: CertificateSummaryList
+    id_field: CertificateArn
+    name_field: DomainName
+    key_prefix: acm
+    dr_note: "CANNOT copy cross-region. Must re-issue in DR with same domain names."
+    config_fields:
+      - CertificateArn
+      - DomainName
+      - SubjectAlternativeNames
+      - Status
+      - Type
+      - KeyAlgorithm
+      - InUseBy

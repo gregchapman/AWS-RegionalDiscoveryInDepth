@@ -1,0 +1,22 @@
+service: vpce
+client: ec2
+display_name: VPC Endpoints
+
+operations:
+  - name: VPC Endpoints
+    method: describe_vpc_endpoints
+    paginator: true
+    result_key: VpcEndpoints
+    id_field: VpcEndpointId
+    tag_name: true
+    key_prefix: vpce
+    dr_note: "Service names are region-specific — update region in service name."
+    config_fields:
+      - VpcEndpointId
+      - VpcId
+      - ServiceName
+      - VpcEndpointType
+      - SubnetIds
+      - Groups[].GroupId
+      - PrivateDnsEnabled
+      - State

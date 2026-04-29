@@ -1,0 +1,48 @@
+service: vpc
+client: ec2
+display_name: VPCs
+
+operations:
+  - name: VPCs
+    method: describe_vpcs
+    paginator: true
+    result_key: Vpcs
+    id_field: VpcId
+    tag_name: true
+    key_prefix: vpc
+    dr_note: "CIDR must not overlap with primary if VPC peering is used."
+    config_fields:
+      - VpcId
+      - CidrBlock
+      - DhcpOptionsId
+      - IsDefault
+      - State
+
+  - name: Subnets
+    method: describe_subnets
+    paginator: true
+    result_key: Subnets
+    id_field: SubnetId
+    tag_name: true
+    key_prefix: subnet
+    dr_note: "Subnet IDs change in DR. AZ mapping may differ."
+    config_fields:
+      - SubnetId
+      - VpcId
+      - CidrBlock
+      - AvailabilityZone
+      - MapPublicIpOnLaunch
+
+  - name: Route Tables
+    method: describe_route_tables
+    paginator: true
+    result_key: RouteTables
+    id_field: RouteTableId
+    tag_name: true
+    key_prefix: rtb
+    dr_note: "Routes referencing gateways/endpoints must be remapped in DR."
+    config_fields:
+      - RouteTableId
+      - VpcId
+      - Routes
+      - Associations

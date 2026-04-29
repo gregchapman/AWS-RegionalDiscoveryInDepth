@@ -1,0 +1,20 @@
+service: wafv2
+client: wafv2
+display_name: WAF Web ACLs
+
+operations:
+  - name: WAF Web ACLs
+    method: list_web_acls
+    paginator: false
+    result_key: WebACLs
+    id_field: Id
+    name_field: Name
+    key_prefix: waf
+    dr_note: "WAF Web ACLs are regional. Must recreate with same rules in DR."
+    kwargs:
+      Scope: REGIONAL
+    config_fields:
+      - Name
+      - Id
+      - ARN
+      - Description
