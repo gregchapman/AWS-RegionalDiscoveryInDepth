@@ -1,0 +1,41 @@
+service: tgw
+client: ec2
+display_name: Transit Gateways
+
+operations:
+  - name: Transit Gateways
+    method: describe_transit_gateways
+    paginator: true
+    result_key: TransitGateways
+    id_field: TransitGatewayId
+    tag_name: true
+    key_prefix: tgw
+    dr_note: "TGW is regional. Must recreate in DR with same route tables and attachments."
+    config_fields:
+      - TransitGatewayId
+      - TransitGatewayArn
+      - State
+      - OwnerId
+      - Options.AmazonSideAsn
+      - Options.DefaultRouteTableAssociation
+      - Options.DefaultRouteTablePropagation
+      - Options.DnsSupport
+
+  - name: Transit Gateway Attachments
+    method: describe_transit_gateway_attachments
+    paginator: true
+    result_key: TransitGatewayAttachments
+    id_field: TransitGatewayAttachmentId
+    tag_name: true
+    key_prefix: tgw-attach
+    dr_note: "Attachments reference VPCs and TGWs by ID — must be remapped in DR."
+    config_fields:
+      - TransitGatewayAttachmentId
+      - TransitGatewayId
+      - TransitGatewayOwnerId
+      - ResourceOwnerId
+      - ResourceType
+      - ResourceId
+      - State
+      - Association.TransitGatewayRouteTableId
+      - Association.State

@@ -59,16 +59,22 @@ def tprint(*args, **kwargs):
 # TEMPLATE LOADER
 # ═══════════════════════════════════════════════════════════════════
 
-def load_templates(template_dir: str) -> Dict[str, dict]:
+def load_templates(template_dir: str,
+                   auto_template_dir: str = '') -> Dict[str, dict]:
     """Load all YAML templates from the template directory.
-    Also loads auto-generated templates from templates/auto/ as fallback.
+    Also loads auto-generated templates as fallback.
     Hand-crafted templates take precedence over auto-generated ones.
+
+    Args:
+        template_dir: path to hand-crafted templates
+        auto_template_dir: explicit path to auto-generated templates.
+                           If empty, falls back to <template_dir>/auto/
     Returns a dict of service_name -> template_dict.
     """
     templates = {}
 
     # Load auto-generated templates first (lower priority)
-    auto_dir = os.path.join(template_dir, 'auto')
+    auto_dir = auto_template_dir or os.path.join(template_dir, 'auto')
     if os.path.isdir(auto_dir):
         pattern = os.path.join(auto_dir, '*.yaml')
         for filepath in sorted(glob.glob(pattern)):
@@ -283,6 +289,7 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
 
             # Build config dict from config_fields
             config = {}
+            used_keys = {}
             for field in config_fields:
                 # Use the last part of the path as the config key
                 if '[]' in field:
@@ -291,6 +298,24 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
                     key = field.split('.')[-1]
                 else:
                     key = field
+
+                # Detect key collisions from different parent paths
+                # e.g. RequesterVpcInfo.VpcId and AccepterVpcInfo.VpcId
+                # both produce key 'VpcId' — disambiguate with parent prefix
+                if key in used_keys and used_keys[key] != field:
+                    # Rename the previously stored value with its parent prefix
+                    prev_field = used_keys[key]
+                    if '.' in prev_field:
+                        parts = prev_field.split('.')
+                        qualified_prev = f"{parts[-2]}_{parts[-1]}"
+                        config[qualified_prev] = config.pop(key)
+                        used_keys[qualified_prev] = prev_field
+                    # Use parent-qualified key for the current field too
+                    if '.' in field:
+                        parts = field.split('.')
+                        key = f"{parts[-2]}_{parts[-1]}"
+
+                used_keys[key] = field
                 config[key] = extract_field(item, field)
 
             # Always include tags
@@ -446,6 +471,7 @@ def write_csv(inventory: Dict, filepath: str):
         'Route Tables': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.route_table',
         'RDS Instances': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.rds_instance',
         'Load Balancers': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing',
+        'Classic Load Balancers': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing',
         'Target Groups': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing',
         'Lambda Functions': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda_function',
         'S3 Buckets': 'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.s3',
@@ -616,6 +642,7 @@ def write_drawio(inventory: Dict, filepath: str):
         'Subnets': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.subnet;',
         'RDS Instances': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.rds_instance;',
         'Load Balancers': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.application_load_balancer;',
+        'Classic Load Balancers': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.classic_load_balancer;',
         'Target Groups': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing;',
         'Lambda Functions': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;',
         'S3 Buckets': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.s3;',
@@ -852,6 +879,8 @@ Examples:
                         help='Parallel workers (default: 10)')
     parser.add_argument('--templates', default='',
                         help='Template directory (default: ./templates)')
+    parser.add_argument('--auto-templates', default='',
+                        help='Auto-generated template directory (default: <templates>/auto)')
     args = parser.parse_args()
 
     # Resolve paths
@@ -861,7 +890,7 @@ Examples:
     os.makedirs(output_dir, exist_ok=True)
 
     # Load templates
-    templates = load_templates(template_dir)
+    templates = load_templates(template_dir, args.auto_templates)
     if not templates:
         tprint(f"ERROR: No templates found in {template_dir}")
         sys.exit(1)

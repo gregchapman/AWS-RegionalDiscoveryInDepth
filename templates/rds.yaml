@@ -28,3 +28,5 @@ operations:
       - VpcSecurityGroups[].VpcSecurityGroupId
       - DBParameterGroups[].DBParameterGroupName
       - BackupRetentionPeriod
+      - ReadReplicaSourceDBInstanceIdentifier
+      - ReadReplicaDBInstanceIdentifiers

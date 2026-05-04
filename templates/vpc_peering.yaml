@@ -1,0 +1,26 @@
+service: pcx
+client: ec2
+display_name: VPC Peering Connections
+
+operations:
+  - name: VPC Peering Connections
+    method: describe_vpc_peering_connections
+    paginator: true
+    result_key: VpcPeeringConnections
+    id_field: VpcPeeringConnectionId
+    tag_name: true
+    key_prefix: pcx
+    dr_note: "Peering connections are region-specific. Must recreate in DR between the correct VPCs."
+    skip_if:
+      Status.Code: [deleted, rejected, expired, failed]
+    config_fields:
+      - VpcPeeringConnectionId
+      - Status.Code
+      - RequesterVpcInfo.VpcId
+      - RequesterVpcInfo.CidrBlock
+      - RequesterVpcInfo.OwnerId
+      - RequesterVpcInfo.Region
+      - AccepterVpcInfo.VpcId
+      - AccepterVpcInfo.CidrBlock
+      - AccepterVpcInfo.OwnerId
+      - AccepterVpcInfo.Region

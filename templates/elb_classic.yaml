@@ -1,0 +1,32 @@
+service: elb
+client: elb
+display_name: Classic Load Balancers
+
+operations:
+  - name: Classic Load Balancers
+    method: describe_load_balancers
+    paginator: true
+    result_key: LoadBalancerDescriptions
+    id_field: LoadBalancerName
+    name_field: LoadBalancerName
+    key_prefix: clb
+    dr_note: "Classic ELBs are region-specific. Instance IDs and DNS names will differ in DR."
+    config_fields:
+      - LoadBalancerName
+      - DNSName
+      - Scheme
+      - VPCId
+      - AvailabilityZones
+      - Subnets
+      - SecurityGroups
+      - Instances[].InstanceId
+      - ListenerDescriptions[].Listener.Protocol
+      - ListenerDescriptions[].Listener.LoadBalancerPort
+      - ListenerDescriptions[].Listener.InstanceProtocol
+      - ListenerDescriptions[].Listener.InstancePort
+      - HealthCheck.Target
+      - HealthCheck.Interval
+      - HealthCheck.Timeout
+      - HealthCheck.HealthyThreshold
+      - HealthCheck.UnhealthyThreshold
+      - CreatedTime
