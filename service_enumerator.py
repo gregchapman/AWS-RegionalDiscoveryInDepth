@@ -31,7 +31,7 @@ import os
 import sys
 import time
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -367,7 +367,7 @@ def run_enumeration(region: str, max_workers: int = 20,
         'metadata': {
             'account_id': account_id,
             'region': region,
-            'scan_date': datetime.utcnow().isoformat() + 'Z',
+            'scan_date': datetime.now(tz=timezone.utc).isoformat(),
             'services_probed': len(all_services),
             'workers': max_workers,
             'tool': 'service_enumerator.py',

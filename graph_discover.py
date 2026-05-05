@@ -145,8 +145,8 @@ class InventoryModel:
             rid = res.get('resource_id', '')
             config = res.get('config', {})
 
-            # VPC containment
-            vpc_id = config.get('VpcId', '')
+            # VPC containment (v2 uses VpcId, classic ELB uses VPCId)
+            vpc_id = config.get('VpcId', '') or config.get('VPCId', '')
             if vpc_id and vpc_id != rid and vpc_id in self.by_id:
                 self.children[vpc_id].append(res)
 
@@ -696,6 +696,7 @@ def render_drawio(model: InventoryModel, filepath: str):
 
     # ── Process each VPC ──
     vpc_y = 120
+    max_vpc_w = 800  # Track widest VPC for right-side label placement
     for vpc in model.vpcs():
         vpc_rid = vpc.get('resource_id', '')
         vpc_cfg = vpc.get('config', {})
@@ -721,15 +722,102 @@ def render_drawio(model: InventoryModel, filepath: str):
             az_instances[az].append(inst)
         sorted_azs = sorted(az_instances.keys())
 
-        # Calculate VPC container size
+        # Initial VPC container — calculate sizes FIRST
         num_lbs = len(lbs)
-        num_azs = max(len(sorted_azs), 1)
-        max_inst_per_az = max((len(v) for v in az_instances.values()), default=1)
         AZ_W = 200
-        AZ_H = max(max_inst_per_az * 100 + 60, 160)
-        lb_row_h = 120 if lbs else 0
 
-        # Data tier: count RDS in this VPC + cache, wrapped at DATA_PER_ROW
+        # ── Build subnet map: subnet_id → subnet resource ──
+        subnet_map = {}  # subnet_id -> subnet resource
+        for sn in subnets:
+            subnet_map[sn.get('resource_id', '')] = sn
+
+        # ── Determine which subnets are public (LB subnets) ──
+        # Collect all subnet IDs referenced by LBs
+        lb_subnet_ids = set()
+        for lb in lbs:
+            lb_cfg = lb.get('config', {})
+            lb_subs = lb_cfg.get('Subnets', [])
+            if isinstance(lb_subs, list):
+                lb_subnet_ids.update(lb_subs)
+
+        # Group subnets by AZ, split into public and private
+        az_public_subnets = _dd(list)   # az -> [subnet resources]
+        az_private_subnets = _dd(list)  # az -> [subnet resources]
+        for sn in subnets:
+            cfg = sn.get('config', {})
+            az = cfg.get('AvailabilityZone', 'unknown')
+            is_public = cfg.get('MapPublicIpOnLaunch', False)
+            if is_public:
+                az_public_subnets[az].append(sn)
+            else:
+                az_private_subnets[az].append(sn)
+
+        # ── Group instances by AZ and subnet ──
+        az_subnet_instances = _dd(lambda: _dd(list))  # az -> subnet_id -> [instances]
+        for inst in instances:
+            cfg = inst.get('config', {})
+            az = cfg.get('AvailabilityZone', 'unknown')
+            sn_id = cfg.get('SubnetId', 'unknown')
+            az_subnet_instances[az][sn_id].append(inst)
+
+        # ── LB placement will happen after VPC cell is created ──
+
+        # ── Also collect VPC-attached Lambdas for this VPC ──
+        vpc_lambdas = []
+        for lf in model.lambda_functions():
+            lf_cfg = lf.get('config', {})
+            lf_subnets = lf_cfg.get('SubnetIds', [])
+            if isinstance(lf_subnets, list) and lf_subnets:
+                for sn_id in lf_subnets:
+                    for sn in subnets:
+                        if sn.get('resource_id', '') == sn_id:
+                            vpc_lambdas.append(lf)
+                            az = sn.get('config', {}).get('AvailabilityZone', 'unknown')
+                            lf['_resolved_az'] = az
+                            lf['_resolved_subnet'] = sn_id
+                            break
+                    else:
+                        continue
+                    break
+
+        # ── Recalculate AZs ──
+        # Include AZs from instances, lambdas, and LB subnets
+        all_azs = set(az_instances.keys())
+        for lf in vpc_lambdas:
+            all_azs.add(lf.get('_resolved_az', 'unknown'))
+        for sn_id in lb_subnet_ids:
+            if sn_id in subnet_map:
+                az = subnet_map[sn_id].get('config', {}).get('AvailabilityZone', '')
+                if az:
+                    all_azs.add(az)
+        sorted_azs = sorted(all_azs)
+
+        # ── Calculate sizes ──
+        # Max items in any single AZ (instances + lambdas in private subnets)
+        max_private_per_az = max(
+            (len(az_instances.get(az, [])) for az in sorted_azs), default=0)
+        max_lambda_per_az = max(
+            (sum(1 for lf in vpc_lambdas if lf.get('_resolved_az') == az)
+             for az in sorted_azs), default=0)
+        max_items_per_az = max_private_per_az + max_lambda_per_az
+
+        # Public subnet tier height (for LB subnet containers)
+        has_public_tier = bool(lb_subnet_ids)
+        PUBLIC_TIER_H = 100 if has_public_tier else 0
+
+        # Private tier height based on instance count
+        PRIVATE_TIER_H = max(max_items_per_az * 90 + 60, 160)
+
+        AZ_H = PUBLIC_TIER_H + PRIVATE_TIER_H + 40
+        AZ_W = 200
+
+        # Recalculate VPC dimensions
+        num_azs = max(len(sorted_azs), 1)
+        lb_row_h = 120 if lbs else 0
+        vpc_w = max(800, num_azs * (AZ_W + 20) + 200)
+        vpc_w = min(vpc_w, 1800)
+        max_vpc_w = max(max_vpc_w, vpc_w)
+
         DATA_PER_ROW = 5
         rds_in_this_vpc = model.rds_in_vpc(vpc_rid)
         cache_items = model.by_category('ElastiCache Clusters')
@@ -737,16 +825,17 @@ def render_drawio(model: InventoryModel, filepath: str):
         data_rows = max((total_data + DATA_PER_ROW - 1) // DATA_PER_ROW, 0)
         data_row_h = data_rows * 100 + 40 if total_data > 0 else 0
 
-        vpc_w = max(800, num_azs * (AZ_W + 20) + 200, (num_lbs + 1) * 140)
-        vpc_w = min(vpc_w, 1800)  # Cap width
         vpc_h = lb_row_h + AZ_H + 60 + data_row_h + 40
 
+        # NOW create the VPC cell with correct dimensions
         vpc_id = add_cell('1',
                           f'{vpc_name}<br><font style="font-size:10px">{cidr} | {region}</font>',
                           VPC_STYLE, 50, vpc_y, vpc_w, vpc_h)
+        id_map[vpc_rid] = vpc_id
 
-        # ── LB tier (top of VPC) ──
+        # ── LB placement: inside VPC at top, spanning AZs ──
         lb_ids = []
+        lb_y = 30
         for i, lb in enumerate(lbs):
             lb_name = lb.get('name', '')
             lb_cfg = lb.get('config', {})
@@ -763,61 +852,45 @@ def render_drawio(model: InventoryModel, filepath: str):
             scheme = lb_cfg.get('Scheme', '')
 
             lid = add_cell(vpc_id, short, style,
-                           30 + i * 140, 30, S, S)
+                           30 + i * 140, lb_y, S, S)
             lb_ids.append(lid)
             id_map[lb.get('resource_id', lb_name)] = lid
 
             if scheme == 'internet-facing':
                 add_edge(inet_id, lid)
 
-        # ── AZ containers with instances ──
+        # ── AZ containers with subnet tiers ──
         az_y = lb_row_h + 20
         inst_ids = []
-
-        # Also collect VPC-attached Lambdas for this VPC
-        vpc_lambdas = []
-        for lf in model.lambda_functions():
-            lf_cfg = lf.get('config', {})
-            lf_subnets = lf_cfg.get('SubnetIds', [])
-            if isinstance(lf_subnets, list) and lf_subnets:
-                # Check if any of the Lambda's subnets are in this VPC
-                for sn_id in lf_subnets:
-                    for sn in subnets:
-                        if sn.get('resource_id', '') == sn_id:
-                            vpc_lambdas.append(lf)
-                            # Determine AZ from subnet
-                            az = sn.get('config', {}).get('AvailabilityZone', 'unknown')
-                            lf['_resolved_az'] = az
-                            break
-                    else:
-                        continue
-                    break
-
-        # Add VPC Lambdas to AZ groups
-        az_lambdas = _dd(list)
-        for lf in vpc_lambdas:
-            az = lf.get('_resolved_az', 'unknown')
-            az_lambdas[az].append(lf)
-            if az not in az_instances:
-                az_instances[az] = []  # Ensure AZ exists even if no EC2
-
-        # Recalculate AZs and sizes with Lambdas included
-        sorted_azs = sorted(set(list(az_instances.keys()) + list(az_lambdas.keys())))
-        max_items_per_az = max(
-            (len(az_instances.get(az, [])) + len(az_lambdas.get(az, [])) for az in sorted_azs),
-            default=1
-        )
-        AZ_H = max(max_items_per_az * 100 + 60, 160)
+        public_subnet_cell_ids = {}  # subnet_id -> cell_id (for LB edges)
 
         for az_idx, az_name in enumerate(sorted_azs):
             az_x = 20 + az_idx * (AZ_W + 20)
-            az_short = az_name.split('-')[-1] if '-' in az_name else az_name
             az_label = f'{az_name}'
 
             az_id = add_cell(vpc_id, az_label, AZ_STYLE,
                              az_x, az_y, AZ_W, AZ_H)
 
-            for inst_idx, inst in enumerate(az_instances[az_name]):
+            inner_y = 30
+
+            # ── Public subnet tier (if this AZ has public subnets used by LBs) ──
+            if has_public_tier:
+                az_pub_subs = [sn for sn in az_public_subnets.get(az_name, [])
+                               if sn.get('resource_id', '') in lb_subnet_ids]
+                if az_pub_subs:
+                    # Show the public subnet as a small labeled container
+                    pub_sn = az_pub_subs[0]  # Primary public subnet
+                    pub_name = pub_sn.get('name', 'public')
+                    pub_cidr = pub_sn.get('config', {}).get('CidrBlock', '')
+                    pub_label = f'{pub_name[:15]}<br><font style="font-size:8px">{pub_cidr}</font>'
+                    pub_cell = add_cell(az_id, pub_label, SUBNET_STYLE,
+                                        10, inner_y, AZ_W - 20, PUBLIC_TIER_H - 10)
+                    public_subnet_cell_ids[pub_sn.get('resource_id', '')] = pub_cell
+                inner_y += PUBLIC_TIER_H
+
+            # ── Private subnet tier (instances) ──
+            az_insts = az_instances.get(az_name, [])
+            for inst_idx, inst in enumerate(az_insts):
                 name = inst.get('name', '')
                 cfg = inst.get('config', {})
                 itype = cfg.get('InstanceType', '')
@@ -826,24 +899,32 @@ def render_drawio(model: InventoryModel, filepath: str):
                 label = f'{short_name}<br><font style="font-size:9px">{itype} | {ip}</font>'
 
                 iid = add_cell(az_id, label, EC2_STYLE,
-                               (AZ_W - S) // 2, 30 + inst_idx * 90, S, S)
+                               (AZ_W - S) // 2, inner_y + inst_idx * 90, S, S)
                 inst_ids.append(iid)
                 id_map[inst.get('resource_id', name)] = iid
 
             # VPC-attached Lambdas in this AZ
-            az_lfs = az_lambdas.get(az_name, [])
-            offset = len(az_instances.get(az_name, [])) * 90
+            az_lfs = [lf for lf in vpc_lambdas if lf.get('_resolved_az') == az_name]
+            offset = len(az_insts) * 90
             for lf_idx, lf in enumerate(az_lfs):
                 lf_name = lf.get('name', '')
                 short = lf_name[:20] if len(lf_name) > 20 else lf_name
                 lf_id = add_cell(az_id, short, LAMBDA_STYLE,
-                                 (AZ_W - S) // 2, 30 + offset + lf_idx * 90, S, S)
+                                 (AZ_W - S) // 2, inner_y + offset + lf_idx * 90, S, S)
                 id_map[lf.get('resource_id', lf_name)] = lf_id
 
-        # LBs → all instances
-        for lid in lb_ids:
-            for iid in inst_ids:
-                add_edge(lid, iid)
+        # ── LB → public subnet edges (showing AZ spanning) ──
+        # LBs are VPC children, subnets are AZ grandchildren — same
+        # parent-into-child direction as Internet→CLB which renders fine.
+        for lb in lbs:
+            lb_cfg = lb.get('config', {})
+            lb_subs = lb_cfg.get('Subnets', [])
+            lb_rid = lb.get('resource_id', lb.get('name', ''))
+            lb_cell = id_map.get(lb_rid)
+            if lb_cell and isinstance(lb_subs, list):
+                for sn_id in lb_subs:
+                    if sn_id in public_subnet_cell_ids:
+                        add_edge(lb_cell, public_subnet_cell_ids[sn_id])
 
         # ── Data tier (bottom of VPC) ──
         # RDS instances that belong to this VPC (matched via SG→VPC)
@@ -877,10 +958,13 @@ def render_drawio(model: InventoryModel, filepath: str):
             data_ids.append(cid_val)
             id_map[c.get('resource_id', name)] = cid_val
 
-        # Instances → data stores
-        for iid in inst_ids:
-            for did in data_ids:
-                add_edge(iid, did)
+        # Representative edges: first instance in each AZ → data stores
+        # DISABLED: edges between nested cells and VPC-level cells cause
+        # draw.io to displace icons. Spatial proximity communicates the
+        # relationship (data tier is at the bottom of the VPC).
+        # for iid in shown_inst_ids:
+        #     for did in data_ids:
+        #         add_edge(iid, did)
 
         # NAT Gateways
         for i, nat in enumerate(nats):
@@ -920,6 +1004,8 @@ def render_drawio(model: InventoryModel, filepath: str):
             'points=[];autosize=1;strokeColor=#8C4FFF;fillColor=#E6E0F8;'
             'fontColor=#5A3E8E;fontSize=10;rounded=1;arcSize=20;'
         )
+        tgw_remote_x = max_vpc_w + 150  # Right side of diagram
+        tgw_remote_y = tgw_y
         for att in tgw_attachments:
             att_cfg = att.get('config', {})
             tgw_id = att_cfg.get('TransitGatewayId', '')
@@ -929,11 +1015,11 @@ def render_drawio(model: InventoryModel, filepath: str):
             att_name = att.get('name', att.get('resource_id', ''))
 
             if tgw_id in id_map and resource_id in id_map:
-                # Both sides are in our inventory — solid edge
+                # Both sides are in our inventory — solid edge (same nesting level)
                 add_edge(id_map[tgw_id], id_map[resource_id])
             elif tgw_id in id_map:
                 # TGW is local but the attached resource is in another
-                # region or account — draw a labeled dashed line
+                # region or account — draw a labeled dashed line to the right
                 detail_parts = [resource_type]
                 if resource_id:
                     detail_parts.append(resource_id[:25])
@@ -944,7 +1030,7 @@ def render_drawio(model: InventoryModel, filepath: str):
                 remote_cell = add_cell(
                     '1',
                     f'{att_name}<br><font style="font-size:9px">{detail}</font>',
-                    REMOTE_LABEL_STYLE, 500, tgw_y, 220, 40)
+                    REMOTE_LABEL_STYLE, tgw_remote_x, tgw_remote_y, 280, 40)
                 eid = next_id()
                 edge = ET.SubElement(graph_root, 'mxCell',
                                      id=eid, value='',
@@ -954,9 +1040,9 @@ def render_drawio(model: InventoryModel, filepath: str):
                                      target=remote_cell)
                 geo = ET.SubElement(edge, 'mxGeometry', relative='1')
                 geo.set('as', 'geometry')
-                tgw_y += 60
+                tgw_remote_y += 60
 
-        vpc_y = tgw_y + 100
+        vpc_y = tgw_y + 140
 
     # ── VPC Peering Connections ──
     PCX_STYLE = (
@@ -971,6 +1057,9 @@ def render_drawio(model: InventoryModel, filepath: str):
         'dashed=1;endArrow=none;'
     )
     peerings = model.by_category('VPC Peering Connections')
+    # Place remote peering labels to the right of the VPC they connect to
+    pcx_remote_x = 0  # Will be set to max_vpc_w + margin
+    pcx_remote_y = 120  # Start at top of diagram, offset per item
     for pcx in peerings:
         cfg = pcx.get('config', {})
         pcx_id = pcx.get('resource_id', '')
@@ -1020,15 +1109,19 @@ def render_drawio(model: InventoryModel, filepath: str):
                 detail_parts.append(remote_vpc)
             detail = ' | '.join(detail_parts) if detail_parts else 'cross-account/region'
 
-            # Draw as a labeled dashed line to a text-only node (no AWS icon)
+            # Place to the RIGHT of the diagram (east-west layout)
             REMOTE_LABEL_STYLE = (
                 'text;html=1;align=center;verticalAlign=middle;resizable=0;'
                 'points=[];autosize=1;strokeColor=#8C4FFF;fillColor=#E6E0F8;'
                 'fontColor=#5A3E8E;fontSize=10;rounded=1;arcSize=20;'
             )
+            # Position remote labels to the right, stacked vertically
+            if pcx_remote_x == 0:
+                pcx_remote_x = max_vpc_w + 150  # Right of the widest VPC
             remote_cell = add_cell('1',
                                    f'Peering: {name}<br><font style="font-size:9px">{detail}</font>',
-                                   REMOTE_LABEL_STYLE, 50, vpc_y, 200, 40)
+                                   REMOTE_LABEL_STYLE,
+                                   pcx_remote_x, pcx_remote_y, 280, 40)
             eid = next_id()
             edge = ET.SubElement(graph_root, 'mxCell',
                                  id=eid, value='',
@@ -1038,7 +1131,7 @@ def render_drawio(model: InventoryModel, filepath: str):
                                  target=remote_cell)
             geo = ET.SubElement(edge, 'mxGeometry', relative='1')
             geo.set('as', 'geometry')
-            vpc_y += 100
+            pcx_remote_y += 80
 
     # ── Lambdas outside VPC ──
     # Collect all Lambda resource_ids that were placed inside a VPC
@@ -1076,7 +1169,9 @@ def render_drawio(model: InventoryModel, filepath: str):
 
     # ── Write XML ──
     tree = ET.ElementTree(root)
-    ET.indent(tree, space='  ')
+    # ET.indent requires Python 3.9+; skip pretty-printing on older versions
+    if hasattr(ET, 'indent'):
+        ET.indent(tree, space='  ')
     tree.write(filepath, encoding='unicode', xml_declaration=False)
     print(f"  ✓ draw.io        → {filepath}")
 

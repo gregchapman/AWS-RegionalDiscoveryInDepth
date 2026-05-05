@@ -24,7 +24,7 @@ import sys
 import time
 import argparse
 import glob
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Dict, List, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -291,9 +291,16 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
             config = {}
             used_keys = {}
             for field in config_fields:
-                # Use the last part of the path as the config key
+                # Use the leaf of the path as the config key
                 if '[]' in field:
-                    key = field.split('[]')[0].split('.')[-1]
+                    # e.g. 'ListenerDescriptions[].Listener.Protocol' → 'Protocol'
+                    # e.g. 'SecurityGroups[].GroupId' → 'GroupId'
+                    # e.g. 'SecurityGroups[]' → 'SecurityGroups'
+                    after_bracket = field.split('[]', 1)[1].strip('.')
+                    if after_bracket:
+                        key = after_bracket.split('.')[-1]
+                    else:
+                        key = field.split('[]')[0].split('.')[-1]
                 elif '.' in field:
                     key = field.split('.')[-1]
                 else:
@@ -305,15 +312,21 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
                 if key in used_keys and used_keys[key] != field:
                     # Rename the previously stored value with its parent prefix
                     prev_field = used_keys[key]
-                    if '.' in prev_field:
-                        parts = prev_field.split('.')
-                        qualified_prev = f"{parts[-2]}_{parts[-1]}"
+                    if key in config:
+                        # Build a qualified key for the previous entry
+                        if '.' in prev_field:
+                            parts = prev_field.replace('[]', '').split('.')
+                            qualified_prev = f"{parts[-2]}_{parts[-1]}"
+                        else:
+                            qualified_prev = f"{prev_field}_{key}"
                         config[qualified_prev] = config.pop(key)
                         used_keys[qualified_prev] = prev_field
                     # Use parent-qualified key for the current field too
                     if '.' in field:
-                        parts = field.split('.')
+                        parts = field.replace('[]', '').split('.')
                         key = f"{parts[-2]}_{parts[-1]}"
+                    else:
+                        key = f"{field}_{key}"
 
                 used_keys[key] = field
                 config[key] = extract_field(item, field)
@@ -334,9 +347,9 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
 
     except botocore.exceptions.ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', '')
-        tprint(f"    WARNING: {method_name} failed: {error_code}")
+        tprint(f"    ⚠ {service_name}.{method_name} failed: {error_code}")
     except Exception as e:
-        tprint(f"    WARNING: {method_name} error: {type(e).__name__}: {str(e)[:200]}")
+        tprint(f"    ⚠ {service_name}.{method_name} error: {type(e).__name__}: {str(e)[:200]}")
 
     return resources
 
@@ -370,14 +383,16 @@ def discover_service(template: dict, region: str) -> Dict[str, List]:
                 results[op_name] = items
                 tprint(f"    {op_name}: {len(items)} resources")
         except Exception as e:
-            tprint(f"    WARNING: {op_name}: {e}")
+            tprint(f"    ⚠ {op_name}: {e}")
 
     elapsed = round(time.time() - start, 1)
     total = sum(len(v) for v in results.values())
     if total > 0:
         tprint(f"  ✓ {display_name}: {total} resources ({elapsed}s)")
     else:
-        tprint(f"  · {display_name}: 0 resources ({elapsed}s)")
+        auto = template.get('auto_generated', False)
+        marker = '·' if auto else '⚠'
+        tprint(f"  {marker} {display_name}: 0 resources ({elapsed}s)")
 
     return results
 
@@ -393,7 +408,7 @@ def build_inventory(all_results: Dict[str, Dict], region: str,
         'metadata': {
             'account_id': account_id,
             'region': region,
-            'scan_date': datetime.utcnow().isoformat() + 'Z',
+            'scan_date': datetime.now(tz=timezone.utc).isoformat(),
             'tool': 'deep_discover.py',
             'note': 'Review and remove resources already deployed by '
                     'CCPM/management infrastructure.',
@@ -626,230 +641,6 @@ def write_mermaid(inventory: Dict, filepath: str):
     tprint(f"  Mermaid: {filepath}")
 
 
-def write_drawio(inventory: Dict, filepath: str):
-    """Write a native draw.io XML file with AWS icons and connections.
-
-    This generates the mxGraphModel XML that draw.io uses natively.
-    Open directly in draw.io or paste into Extras → Edit Diagram.
-    """
-    import xml.etree.ElementTree as ET
-
-    # AWS icon style map — these are the mxgraph stencil references
-    ICON_MAP = {
-        'EC2 Instances': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.ec2_instance;',
-        'Security Groups': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.security_group;',
-        'VPCs': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.vpc;',
-        'Subnets': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.subnet;',
-        'RDS Instances': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.rds_instance;',
-        'Load Balancers': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.application_load_balancer;',
-        'Classic Load Balancers': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.classic_load_balancer;',
-        'Target Groups': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elastic_load_balancing;',
-        'Lambda Functions': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.lambda_function;',
-        'S3 Buckets': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#3F8624;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.s3;',
-        'NAT Gateways': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.nat_gateway;',
-        'VPC Endpoints': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.endpoint;',
-        'ElastiCache Clusters': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.elasticache;',
-        'ACM Certificates': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.certificate_manager_3;',
-        'KMS Keys': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.kms;',
-        'SSM Parameters': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.parameter_store;',
-        'Secrets': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.secrets_manager;',
-        'CloudWatch Alarms': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.cloudwatch_2;',
-        'SNS Topics': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.sns;',
-        'Hosted Zones': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.route_53;',
-        'WAF Web ACLs': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.waf;',
-        'EventBridge Rules': 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.eventbridge;',
-    }
-    DEFAULT_STYLE = 'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3E;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.general_AWScloud;'
-    EDGE_STYLE = 'edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#545B64;strokeWidth=1;'
-
-    # Build the XML
-    root = ET.Element('mxGraphModel')
-    root.set('dx', '1653')
-    root.set('dy', '900')
-    root.set('grid', '1')
-    root.set('gridSize', '10')
-    root.set('guides', '1')
-    root.set('tooltips', '1')
-    root.set('connect', '1')
-    root.set('arrows', '1')
-    root.set('fold', '1')
-    root.set('page', '1')
-    root.set('pageScale', '1')
-    root.set('pageWidth', '1600')
-    root.set('pageHeight', '1200')
-    root.set('math', '0')
-    root.set('shadow', '0')
-
-    graph_root = ET.SubElement(root, 'root')
-
-    # Required base cells
-    cell0 = ET.SubElement(graph_root, 'mxCell')
-    cell0.set('id', '0')
-    cell1 = ET.SubElement(graph_root, 'mxCell')
-    cell1.set('id', '1')
-    cell1.set('parent', '0')
-
-    cell_id = 10  # Start IDs above the base cells
-    id_map = {}   # resource_id -> cell_id (for edges)
-
-    # Layout: arrange by category in columns
-    col = 0
-    COL_WIDTH = 200
-    ROW_HEIGHT = 120
-    SHAPE_SIZE = 60
-
-    for category, resources in inventory.get('resources', {}).items():
-        style = ICON_MAP.get(category, DEFAULT_STYLE)
-
-        # Category label
-        cell_id += 1
-        label_cell = ET.SubElement(graph_root, 'mxCell')
-        label_cell.set('id', str(cell_id))
-        label_cell.set('value', f'<b>{category}</b><br>({len(resources)})')
-        label_cell.set('style', 'text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=13;fontStyle=1;')
-        label_cell.set('vertex', '1')
-        label_cell.set('parent', '1')
-        geo = ET.SubElement(label_cell, 'mxGeometry')
-        geo.set('x', str(col * COL_WIDTH + 10))
-        geo.set('y', str(10))
-        geo.set('width', str(COL_WIDTH - 20))
-        geo.set('height', str(40))
-        geo.set('as', 'geometry')
-
-        for row, res in enumerate(resources):
-            cell_id += 1
-            res_id = res.get('resource_id', '')
-            id_map[res_id] = cell_id
-
-            name = res.get('name', res_id)
-            if len(name) > 30:
-                name = name[:27] + '...'
-
-            cell = ET.SubElement(graph_root, 'mxCell')
-            cell.set('id', str(cell_id))
-            cell.set('value', name)
-            cell.set('style', style)
-            cell.set('vertex', '1')
-            cell.set('parent', '1')
-
-            # Add metadata as tooltip
-            config = res.get('config', {})
-            tooltip_parts = [f"{k}: {v}" for k, v in config.items()
-                           if k != 'Tags' and v and str(v) != '']
-            if tooltip_parts:
-                cell.set('tooltip', '\n'.join(tooltip_parts[:10]))
-
-            geo = ET.SubElement(cell, 'mxGeometry')
-            geo.set('x', str(col * COL_WIDTH + (COL_WIDTH - SHAPE_SIZE) // 2))
-            geo.set('y', str(60 + row * ROW_HEIGHT))
-            geo.set('width', str(SHAPE_SIZE))
-            geo.set('height', str(SHAPE_SIZE))
-            geo.set('as', 'geometry')
-
-        col += 1
-
-    # Draw edges for resource references
-    # We check every config value for strings that look like resource IDs
-    # and match them against id_map. We also explicitly check common
-    # relationship fields (VpcId, SubnetId) even if they're nested.
-    for category, resources in inventory.get('resources', {}).items():
-        for res in resources:
-            src_res_id = res.get('resource_id', '')
-            src_cell_id = id_map.get(src_res_id)
-            if not src_cell_id:
-                continue
-
-            config = res.get('config', {})
-            connected = set()
-
-            # Collect all string values from config (including inside lists)
-            def collect_refs(obj):
-                refs = []
-                if isinstance(obj, str):
-                    refs.append(obj)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        refs.extend(collect_refs(item))
-                elif isinstance(obj, dict):
-                    for v in obj.values():
-                        refs.extend(collect_refs(v))
-                return refs
-
-            all_refs = []
-            for k, v in config.items():
-                if k == 'Tags':
-                    continue
-                all_refs.extend(collect_refs(v))
-
-            for target in all_refs:
-                if target in id_map and target != src_res_id and target not in connected:
-                    connected.add(target)
-                    cell_id += 1
-                    edge = ET.SubElement(graph_root, 'mxCell')
-                    edge.set('id', str(cell_id))
-                    edge.set('style', EDGE_STYLE)
-                    edge.set('edge', '1')
-                    edge.set('parent', '1')
-                    edge.set('source', str(src_cell_id))
-                    edge.set('target', str(id_map[target]))
-                    geo = ET.SubElement(edge, 'mxGeometry')
-                    geo.set('relative', '1')
-                    geo.set('as', 'geometry')
-
-    # Write XML
-    tree = ET.ElementTree(root)
-    ET.indent(tree, space='  ')
-    tree.write(filepath, encoding='unicode', xml_declaration=False)
-    tprint(f"  draw.io: {filepath}")
-
-
-def write_mermaid(inventory: Dict, filepath: str):
-    """Write a Mermaid diagram showing resources grouped by type.
-
-    Renders in GitHub markdown, Confluence, VS Code preview, etc.
-    """
-    with open(filepath, 'w', newline='\n') as f:
-        meta = inventory['metadata']
-        f.write(f"# Account {meta['account_id']} — {meta['region']}\n")
-        f.write(f"# Generated: {meta['scan_date']}\n\n")
-        f.write("```mermaid\ngraph TD\n")
-
-        node_id = 0
-        node_map = {}
-
-        for category, resources in inventory.get('resources', {}).items():
-            safe_cat = category.replace(' ', '_').replace('-', '_')
-            f.write(f"\n  subgraph {safe_cat}[\"{category} ({len(resources)})\"]\n")
-
-            for res in resources:
-                node_id += 1
-                nid = f"n{node_id}"
-                label = res.get('name', res.get('resource_id', '?'))
-                if len(label) > 40:
-                    label = label[:37] + '...'
-                label = label.replace('"', "'")
-                f.write(f"    {nid}[\"{label}\"]\n")
-                node_map[res.get('resource_id', '')] = nid
-
-            f.write("  end\n")
-
-        f.write("\n  %% Relationships\n")
-        for category, resources in inventory.get('resources', {}).items():
-            for res in resources:
-                src = node_map.get(res.get('resource_id', ''))
-                if not src:
-                    continue
-                config = res.get('config', {})
-                vpc_id = config.get('VpcId', '')
-                if vpc_id and vpc_id in node_map:
-                    f.write(f"  {src} -.-> {node_map[vpc_id]}\n")
-                subnet_id = config.get('SubnetId', '')
-                if subnet_id and subnet_id in node_map:
-                    f.write(f"  {src} --> {node_map[subnet_id]}\n")
-
-        f.write("```\n")
-    tprint(f"  Mermaid: {filepath}")
-
 
 # ═══════════════════════════════════════════════════════════════════
 # MAIN
@@ -955,7 +746,6 @@ Examples:
     write_yaml(inventory, os.path.join(output_dir, f"{base}.yaml"))
     write_json(inventory, os.path.join(output_dir, f"{base}.json"))
     write_csv(inventory, os.path.join(output_dir, f"{base}.csv"))
-    write_drawio(inventory, os.path.join(output_dir, f"{base}.drawio"))
     write_mermaid(inventory, os.path.join(output_dir, f"{base}.mermaid.md"))
     write_summary(inventory, os.path.join(output_dir, "summary.txt"))
 
