@@ -153,6 +153,64 @@ with:
 - Transit Gateway connections (local and remote)
 - VPC Peering connections (local and cross-region/cross-account)
 
+## Inventory vs. Diagram: What Gets Depicted
+
+The inventory and the architecture diagram serve different purposes:
+
+- **Inventory** (`inventory-*.yaml/json`) captures **everything** — every
+  service that has resources gets recorded with full config details. This
+  is your DR reference, compliance artifact, and data source for custom
+  tooling.
+
+- **Architecture diagram** (`architecture-*.drawio`) is **curated** — only
+  resources that have a defined placement in the visual topology are
+  rendered. Platform services (CloudWatch, Config, Trusted Advisor),
+  catalog data (pricing, service quotas), and auto-discovered services
+  without hand-crafted templates appear in the inventory but not the
+  diagram.
+
+This is intentional. A diagram with 6000+ resources is unreadable. The
+diagram shows workload topology — what runs your application, how traffic
+flows, and where the security boundaries are.
+
+### Controlling What Appears in the Diagram
+
+The `CATEGORY_TIERS` dict in `graph_discover.py` determines which
+inventory categories are rendered. Each entry maps an operation name
+(the category key in the inventory) to a tier and functional group:
+
+```python
+CATEGORY_TIERS = {
+    'EC2 Instances':       ('workload', 'compute'),
+    'RDS Instances':       ('workload', 'database'),
+    'Lambda Functions':    ('workload', 'serverless'),
+    'Load Balancers':      ('routing', 'load_balancing'),
+    'VPCs':                ('boundary', 'network'),
+    'Security Groups':     ('attached', 'security'),
+    'CloudWatch Alarms':   ('platform', 'monitoring'),
+    # ... etc
+}
+```
+
+**Tiers:**
+| Tier | Purpose | Example |
+|------|---------|---------|
+| `workload` | Things that run your application | EC2, RDS, Lambda |
+| `routing` | Things that direct traffic | LBs, NAT, TGW |
+| `boundary` | Things that contain other things | VPCs, Subnets |
+| `attached` | Properties of other resources | SGs, certs, keys |
+| `platform` | Logging, monitoring, compliance | CloudWatch, SNS |
+
+**To add a service to the diagram:**
+1. Create a hand-crafted template in `templates/` with a meaningful
+   operation `name` (e.g., "Step Functions" not "List State Machines")
+2. Add that name to `CATEGORY_TIERS` with the appropriate tier
+3. The service will appear in the next scan's diagram and audience views
+
+Categories NOT in `CATEGORY_TIERS` are silently excluded from the
+diagram but remain in the inventory. The audience markdown views note
+how many "noise" categories were excluded.
+
 ## Cross-Region & Cross-Account Visibility
 
 The pipeline captures cross-region communication paths and renders them
