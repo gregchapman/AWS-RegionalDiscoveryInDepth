@@ -386,3 +386,10 @@ pipeline with a message to fix the issue and `--resume`.
 - `boto3` and `botocore`
 - `pyyaml`
 - Valid AWS credentials with read access to the target account/region
+
+```bash
+# Optional: use a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```

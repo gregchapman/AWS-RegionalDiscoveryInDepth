@@ -43,6 +43,7 @@ from collections import defaultdict
 CATEGORY_TIERS = {
     # Tier 1 — Workload
     'EC2 Instances':                  ('workload', 'compute'),
+    'Auto Scaling Groups':            ('workload', 'compute'),
     'RDS Instances':                  ('workload', 'database'),
     'ElastiCache Clusters':           ('workload', 'cache'),
     'ElastiCache Replication Groups': ('workload', 'cache'),

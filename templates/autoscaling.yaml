@@ -1,0 +1,35 @@
+service: autoscaling
+client: autoscaling
+display_name: Auto Scaling Groups
+
+operations:
+  - name: Auto Scaling Groups
+    method: describe_auto_scaling_groups
+    paginator: true
+    result_key: AutoScalingGroups
+    id_field: AutoScalingGroupARN
+    name_field: AutoScalingGroupName
+    key_prefix: asg
+    dr_note: "Recreate ASG with launch template in DR region. Instance IDs will differ."
+    config_fields:
+      - AutoScalingGroupName
+      - AutoScalingGroupARN
+      - LaunchConfigurationName
+      - LaunchTemplate.LaunchTemplateId
+      - LaunchTemplate.LaunchTemplateName
+      - LaunchTemplate.Version
+      - MinSize
+      - MaxSize
+      - DesiredCapacity
+      - AvailabilityZones
+      - VPCZoneIdentifier
+      - HealthCheckType
+      - HealthCheckGracePeriod
+      - Instances[].InstanceId
+      - Instances[].AvailabilityZone
+      - Instances[].LifecycleState
+      - Instances[].HealthStatus
+      - TargetGroupARNs
+      - LoadBalancerNames
+      - Status
+      - CreatedTime
