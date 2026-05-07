@@ -2119,8 +2119,8 @@ Filter files (optional, placed in the input directory):
                        if should_include_resource(sg, include_rules, exclude_rules)]
         if sg_included:
             sg_template, sg_id_map = generate_sg_template(inventory)
-            write_template(sg_template, os.path.join(output_dir, '01-security-groups.yaml'))
-            write_template_docs(sg_template, os.path.join(output_dir, '01-security-groups.md'),
+            write_template(sg_template, os.path.join(templates_dir, 'security-groups.yaml'))
+            write_template_docs(sg_template, os.path.join(templates_dir, 'security-groups.md'),
                                 'Security Groups — Cross-SG references resolved via Ref. '
                                 'Deploy this as a single stack (not per-resource).',
                                 dependencies=[])
@@ -2136,18 +2136,26 @@ Filter files (optional, placed in the input directory):
         f.write(f"Generated: {datetime.now(tz=timezone.utc).isoformat()}\n")
         f.write(f"Source: {inventory_path}\n")
         f.write(f"Account: {account} | Region: {region}\n\n")
+        f.write("Deploy in dependency order:\\n\\n")
+        f.write("| Phase | Category | Reason |\\n")
+        f.write("|-------|----------|--------|\\n")
+        f.write("| 1 | VPCs | Foundation |\\n")
+        f.write("| 2 | Subnets, Route Tables | Network topology |\\n")
+        f.write("| 3 | Security Groups | Referenced by all resources |\\n")
+        f.write("| 4 | NAT Gateways, VPC Endpoints, Directories | Network + identity |\\n")
+        f.write("| 5 | KMS Keys | Encryption (before data tier) |\\n")
+        f.write("| 6 | RDS, ElastiCache, DynamoDB, S3 | Data tier |\\n")
+        f.write("| 7 | EC2, ASG, ECS, EKS | Compute |\\n")
+        f.write("| 8 | Load Balancers, Target Groups | Traffic routing |\\n")
+        f.write("| 9 | Lambda, Step Functions, EventBridge, API GW | Serverless |\\n")
+        f.write("| 10 | ACM, WAF, Route53, SNS, SQS, CloudWatch | Supporting |\\n")
+        f.write("\\n---\\n\\n")
+        f.write("## Security Groups (consolidated stack)\\n\\n```bash\\n")
+        f.write("aws cloudformation deploy \\\\\\n")
+        f.write("  --template-file templates/security-groups.yaml \\\\\\n")
+        f.write("  --stack-name iac-security-groups \\\\\\n")
+        f.write("  --parameter-overrides VpcId=<VPC_ID> VpcCidr=<CIDR>\\n```\\n\\n")
 
-        f.write("## Deployment Order\n\n")
-        f.write("1. `01-security-groups.yaml` — Deploy first (other resources reference SGs)\n")
-        f.write("2. Per-resource stacks — Deploy in any order after SGs\n\n")
-
-        f.write("## Security Groups (consolidated stack)\n\n")
-        f.write("```bash\n")
-        f.write("aws cloudformation deploy \\\n")
-        f.write("  --template-file 01-security-groups.yaml \\\n")
-        f.write("  --stack-name iac-security-groups \\\n")
-        f.write("  --parameter-overrides VpcId=<YOUR_VPC_ID> VpcCidr=<YOUR_CIDR>\n")
-        f.write("```\n\n")
 
         # Group deploy commands by category
         from collections import defaultdict
@@ -2155,7 +2163,19 @@ Filter files (optional, placed in the input directory):
         for cmd in deploy_commands:
             by_category[cmd['category']].append(cmd)
 
-        for cat, cmds in sorted(by_category.items()):
+        DEPLOY_ORDER = [
+            'VPCs', 'Subnets', 'Route Tables', 'NAT Gateways', 'VPC Endpoints',
+            'Directories', 'KMS Keys', 'RDS Instances', 'ElastiCache Clusters',
+            'DynamoDB Tables', 'S3 Buckets', 'EC2 Instances', 'Auto Scaling Groups',
+            'ECS Clusters', 'ECS Services', 'EKS Clusters', 'Classic Load Balancers',
+            'Load Balancers', 'Target Groups', 'Lambda Functions', 'Step Functions',
+            'EventBridge Rules', 'API Gateways', 'ACM Certificates', 'WAF Web ACLs',
+            'Hosted Zones', 'SNS Topics', 'SQS Queues', 'CloudWatch Alarms',
+        ]
+        ordered_cats = [c for c in DEPLOY_ORDER if c in by_category] + \
+                       [c for c in by_category if c not in DEPLOY_ORDER]
+        for cat in ordered_cats:
+            cmds = by_category[cat]
             f.write(f"## {cat} ({len(cmds)} resources)\n\n")
             for cmd in cmds:
                 f.write(f"### {cmd['resource_name']}\n\n")
