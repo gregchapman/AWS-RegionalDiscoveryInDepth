@@ -175,6 +175,39 @@ REGION_SPECIFIC_FIELDS = {
 # Maps inventory categories to their CFN resource type and field mappings
 # Format: category -> {cfn_type, id_field, properties: {cfn_prop: inventory_field}, params: [fields that become parameters]}
 CFN_TYPE_MAP = {
+    # ── Foundation (deploy first) ──
+    'VPCs': {
+        'cfn_type': 'AWS::EC2::VPC',
+        'id_field': 'VpcId',
+        'properties': {
+            'CidrBlock': 'CidrBlock',
+            'EnableDnsSupport': 'EnableDnsSupport',
+            'EnableDnsHostnames': 'EnableDnsHostnames',
+        },
+        'params': {},
+    },
+    'Subnets': {
+        'cfn_type': 'AWS::EC2::Subnet',
+        'id_field': 'SubnetId',
+        'properties': {
+            'CidrBlock': 'CidrBlock',
+            'AvailabilityZone': 'AvailabilityZone',
+            'MapPublicIpOnLaunch': 'MapPublicIpOnLaunch',
+        },
+        'params': {
+            'VpcId': {'type': 'AWS::EC2::VPC::Id', 'source': 'VpcId',
+                      'description': 'VPC to create subnet in'},
+        },
+    },
+    'Route Tables': {
+        'cfn_type': 'AWS::EC2::RouteTable',
+        'id_field': 'RouteTableId',
+        'properties': {},
+        'params': {
+            'VpcId': {'type': 'AWS::EC2::VPC::Id', 'source': 'VpcId',
+                      'description': 'VPC for this route table'},
+        },
+    },
     # ── Compute ──
     'EC2 Instances': {
         'cfn_type': 'AWS::EC2::Instance',
@@ -426,6 +459,25 @@ CFN_TYPE_MAP = {
             'Name': 'Name',
         },
         'params': {},
+    },
+    # ── Identity & Directory ──
+    'Directories': {
+        'cfn_type': 'AWS::DirectoryService::MicrosoftAD',
+        'id_field': 'DirectoryId',
+        'properties': {
+            'Name': 'Name',
+            'ShortName': 'ShortName',
+            'Edition': 'Edition',
+            'Type': 'Type',
+        },
+        'params': {
+            'VpcId': {'type': 'AWS::EC2::VPC::Id', 'source': None,
+                      'description': 'VPC for directory'},
+            'SubnetIds': {'type': 'CommaDelimitedList', 'source': None,
+                          'description': 'Two subnet IDs in different AZs'},
+            'Password': {'type': 'String', 'source': None,
+                         'description': 'Directory admin password (NoEcho)'},
+        },
     },
     # ── Messaging & Integration ──
     'SNS Topics': {
