@@ -380,6 +380,122 @@ pipeline — deep discovery continues with hand-crafted templates only.
 Fatal errors (enumeration failure, deep discovery failure) halt the
 pipeline with a message to fix the issue and `--resume`.
 
+## IaC Blueprint (`iac_blueprint.py`)
+
+Transforms a discovery inventory into deployable CloudFormation templates.
+Run it AFTER discovery completes — it's not part of the automated pipeline.
+
+**Philosophy:** The inventory proves what exists. The blueprint proves we
+can reproduce it. One shared template per resource type, one parameter
+file per resource instance (Sceptre-style separation).
+
+### Usage
+
+```bash
+# Generate IaC from a discovery run
+python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/
+
+# DR mode (parameterizes region-specific values — default)
+python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/ --mode dr
+```
+
+### Output Structure
+
+```
+<run-directory>/iac-templates/
+├── templates/                    ← One CFN template per resource type
+│   ├── ec2-instances.yaml + .md
+│   ├── rds-instances.yaml + .md
+│   ├── lambda-functions.yaml + .md
+│   └── ...
+├── params/                       ← One JSON param file per resource
+│   ├── ec2-instances/
+│   │   ├── web-server-1a.json
+│   │   ├── web-server-1b.json
+│   │   └── ...
+│   ├── rds-instances/
+│   │   └── prod-db.json
+│   └── ...
+├── 01-security-groups.yaml + .md ← Bespoke (cross-SG references)
+├── DEPLOY.md                     ← Orchestration commands
+└── manual-steps.md               ← Resources needing manual action
+```
+
+### Filtering (include/exclude)
+
+Place these files in the run directory before running the blueprint:
+
+```yaml
+# exclude.yaml — skip resources matching these tag patterns
+- Key: aws:cloudformation:stack-name
+  Value: "*Ccpm*"
+- Key: ManagedBy
+  Value: "terraform"
+
+# include.yaml — force-include (overrides exclude)
+- Key: DR
+  Value: "required"
+```
+
+**Precedence:** include overrides exclude. Both empty = include everything.
+
+### Resource Types Covered (24)
+
+| Category | CFN Type |
+|----------|----------|
+| EC2 Instances | AWS::EC2::Instance |
+| Auto Scaling Groups | AWS::AutoScaling::AutoScalingGroup |
+| ECS Clusters | AWS::ECS::Cluster |
+| ECS Services | AWS::ECS::Service |
+| EKS Clusters | AWS::EKS::Cluster |
+| Lambda Functions | AWS::Lambda::Function |
+| Step Functions | AWS::StepFunctions::StateMachine |
+| EventBridge Rules | AWS::Events::Rule |
+| API Gateways | AWS::ApiGatewayV2::Api |
+| RDS Instances | AWS::RDS::DBInstance |
+| ElastiCache Clusters | AWS::ElastiCache::CacheCluster |
+| DynamoDB Tables | AWS::DynamoDB::Table |
+| S3 Buckets | AWS::S3::Bucket |
+| Classic Load Balancers | AWS::ElasticLoadBalancing::LoadBalancer |
+| Load Balancers (ALB/NLB) | AWS::ElasticLoadBalancingV2::LoadBalancer |
+| Target Groups | AWS::ElasticLoadBalancingV2::TargetGroup |
+| NAT Gateways | AWS::EC2::NatGateway |
+| VPC Endpoints | AWS::EC2::VPCEndpoint |
+| Hosted Zones | AWS::Route53::HostedZone |
+| SNS Topics | AWS::SNS::Topic |
+| SQS Queues | AWS::SQS::Queue |
+| KMS Keys | AWS::KMS::Key |
+| ACM Certificates | AWS::CertificateManager::Certificate |
+| WAF Web ACLs | AWS::WAFv2::WebACL |
+| CloudWatch Alarms | AWS::CloudWatch::Alarm |
+| Security Groups | (bespoke — cross-reference resolution) |
+
+Resources not in this list go to `manual-steps.md` with their ARN and
+a note about what manual action is needed.
+
+### Adding a New Resource Type
+
+Add an entry to `CFN_TYPE_MAP` in `iac_blueprint.py`:
+
+```python
+'My Resources': {
+    'cfn_type': 'AWS::Service::Resource',
+    'id_field': 'ResourceId',           # inventory field for the ID
+    'properties': {                      # fields that map directly to CFN props
+        'CfnPropertyName': 'InventoryFieldName',
+    },
+    'params': {                          # fields that become template parameters
+        'SubnetId': {
+            'type': 'AWS::EC2::Subnet::Id',
+            'source': 'SubnetId',        # inventory field (None = user must provide)
+            'description': 'Target subnet',
+        },
+    },
+}
+```
+
+The category name must match the operation `name` in your discovery template.
+
 ## Requirements
 
 - Python 3.8+
