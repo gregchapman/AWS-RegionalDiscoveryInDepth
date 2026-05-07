@@ -423,7 +423,7 @@ python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/ --m
 
 ### Filtering (include/exclude)
 
-Place these files in the run directory before running the blueprint:
+Filtering is based on resource tag key:value pairs defined in include.yaml and exclude.yaml. Place these files in the directory specified with --input before running the blueprint:
 
 ```yaml
 # exclude.yaml — skip resources matching these tag patterns
