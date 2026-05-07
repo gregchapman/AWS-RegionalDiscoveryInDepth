@@ -1324,15 +1324,221 @@ def generate_supporting_template(inventory: dict) -> dict:
     return template
 
 
+
 # ═══════════════════════════════════════════════════════════════════
-# MAIN
+# CFN TYPE MAPPING
 # ═══════════════════════════════════════════════════════════════════
 
-def write_template(template: dict, filepath: str):
-    """Write a CFN template as YAML with a header comment."""
+# Maps inventory categories to CFN resource types.
+# properties: inventory fields that map directly to CFN properties
+# params: fields that become template parameters (region-specific or user-provided)
+CFN_TYPE_MAP = {
+    'EC2 Instances': {
+        'cfn_type': 'AWS::EC2::Instance',
+        'id_field': 'InstanceId',
+        'properties': {
+            'InstanceType': 'InstanceType',
+            'KeyName': 'KeyName',
+        },
+        'params': {
+            'ImageId': {'type': 'AWS::EC2::Image::Id', 'source': 'ImageId',
+                        'description': 'AMI ID in target region'},
+            'SubnetId': {'type': 'AWS::EC2::Subnet::Id', 'source': 'SubnetId',
+                         'description': 'Target subnet'},
+            'SecurityGroupIds': {'type': 'CommaDelimitedList', 'source': 'SecurityGroups',
+                                 'description': 'Security group IDs'},
+        },
+    },
+    'RDS Instances': {
+        'cfn_type': 'AWS::RDS::DBInstance',
+        'id_field': 'DBInstanceIdentifier',
+        'properties': {
+            'DBInstanceClass': 'DBInstanceClass',
+            'Engine': 'Engine',
+            'EngineVersion': 'EngineVersion',
+            'StorageEncrypted': 'StorageEncrypted',
+            'MultiAZ': 'MultiAZ',
+            'BackupRetentionPeriod': 'BackupRetentionPeriod',
+        },
+        'params': {
+            'DBSnapshotIdentifier': {'type': 'String', 'source': None,
+                                      'description': 'Snapshot ID to restore from'},
+            'DBSubnetGroupName': {'type': 'String', 'source': None,
+                                   'description': 'DB subnet group name'},
+        },
+    },
+    'Lambda Functions': {
+        'cfn_type': 'AWS::Lambda::Function',
+        'id_field': 'FunctionName',
+        'properties': {
+            'FunctionName': 'FunctionName',
+            'Runtime': 'Runtime',
+            'Handler': 'Handler',
+            'MemorySize': 'MemorySize',
+            'Timeout': 'Timeout',
+        },
+        'params': {
+            'Role': {'type': 'String', 'source': 'Role',
+                     'description': 'IAM role ARN'},
+            'CodeS3Bucket': {'type': 'String', 'source': None,
+                             'description': 'S3 bucket with deployment package'},
+            'CodeS3Key': {'type': 'String', 'source': None,
+                          'description': 'S3 key for deployment package'},
+        },
+    },
+    'Classic Load Balancers': {
+        'cfn_type': 'AWS::ElasticLoadBalancing::LoadBalancer',
+        'id_field': 'LoadBalancerName',
+        'properties': {
+            'LoadBalancerName': 'LoadBalancerName',
+            'Scheme': 'Scheme',
+        },
+        'params': {
+            'Subnets': {'type': 'CommaDelimitedList', 'source': 'Subnets',
+                        'description': 'Subnet IDs'},
+            'SecurityGroups': {'type': 'CommaDelimitedList', 'source': 'SecurityGroups',
+                               'description': 'Security group IDs'},
+        },
+    },
+    'Load Balancers': {
+        'cfn_type': 'AWS::ElasticLoadBalancingV2::LoadBalancer',
+        'id_field': 'LoadBalancerName',
+        'properties': {
+            'Name': 'LoadBalancerName',
+            'Type': 'Type',
+            'Scheme': 'Scheme',
+        },
+        'params': {
+            'Subnets': {'type': 'CommaDelimitedList', 'source': 'Subnets',
+                        'description': 'Subnet IDs'},
+            'SecurityGroups': {'type': 'CommaDelimitedList', 'source': 'SecurityGroups',
+                               'description': 'Security group IDs'},
+        },
+    },
+    'SNS Topics': {
+        'cfn_type': 'AWS::SNS::Topic',
+        'id_field': 'TopicName',
+        'properties': {'TopicName': 'TopicName', 'DisplayName': 'DisplayName'},
+        'params': {},
+    },
+    'CloudWatch Alarms': {
+        'cfn_type': 'AWS::CloudWatch::Alarm',
+        'id_field': 'AlarmName',
+        'properties': {
+            'AlarmName': 'AlarmName',
+            'Namespace': 'Namespace',
+            'MetricName': 'MetricName',
+            'Statistic': 'Statistic',
+            'Period': 'Period',
+            'EvaluationPeriods': 'EvaluationPeriods',
+            'Threshold': 'Threshold',
+            'ComparisonOperator': 'ComparisonOperator',
+        },
+        'params': {},
+    },
+    'KMS Keys': {
+        'cfn_type': 'AWS::KMS::Key',
+        'id_field': 'KeyId',
+        'properties': {'Description': 'Description', 'KeyUsage': 'KeyUsage'},
+        'params': {},
+    },
+    'S3 Buckets': {
+        'cfn_type': 'AWS::S3::Bucket',
+        'id_field': 'Name',
+        'properties': {'BucketName': 'Name'},
+        'params': {},
+    },
+}
+
+# Categories that go to manual-steps.md (no CFN generation)
+NO_CFN_SUPPORT = {'SSM Parameters', 'Secrets'}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GENERIC TEMPLATE GENERATORS
+# ═══════════════════════════════════════════════════════════════════
+
+def generate_generic_template(category, type_config):
+    """Generate a reusable CFN template for a resource type."""
+    cfn_type = type_config['cfn_type']
+    properties = type_config.get('properties', {})
+    params = type_config.get('params', {})
+
+    template = OrderedDict()
+    template['AWSTemplateFormatVersion'] = '2010-09-09'
+    template['Description'] = f'IaC Blueprint - {category} ({cfn_type})'
+
+    template['Parameters'] = OrderedDict()
+    template['Parameters']['ResourceName'] = {
+        'Type': 'String',
+        'Description': f'Name/identifier for this {category} resource',
+    }
+    for param_name, param_config in params.items():
+        pdef = {'Type': param_config['type']}
+        if param_config.get('description'):
+            pdef['Description'] = param_config['description']
+        template['Parameters'][param_name] = pdef
+
+    for cfn_prop, inv_field in properties.items():
+        template['Parameters'][cfn_prop] = {
+            'Type': 'String',
+            'Description': f'{cfn_prop} (from: {inv_field})',
+        }
+
+    resource_props = OrderedDict()
+    for cfn_prop in properties:
+        resource_props[cfn_prop] = {'Ref': cfn_prop}
+    for param_name in params:
+        resource_props[param_name] = {'Ref': param_name}
+    resource_props['Tags'] = [
+        {'Key': 'Name', 'Value': {'Ref': 'ResourceName'}},
+        {'Key': 'GeneratedBy', 'Value': 'iac_blueprint'},
+    ]
+
+    template['Resources'] = OrderedDict()
+    template['Resources']['Resource'] = {'Type': cfn_type, 'Properties': resource_props}
+    template['Outputs'] = OrderedDict()
+    template['Outputs']['ResourceId'] = {'Value': {'Ref': 'Resource'}}
+    return template
+
+
+def generate_parameter_file(resource, category, type_config):
+    """Generate a parameter file for a specific resource instance."""
+    config = resource.get('config', {})
+    properties = type_config.get('properties', {})
+    params_config = type_config.get('params', {})
+    id_field = type_config.get('id_field', '')
+
+    params = OrderedDict()
+    params['ResourceName'] = resource.get('name', config.get(id_field, 'unnamed'))
+
+    for cfn_prop, inv_field in properties.items():
+        val = config.get(inv_field, '')
+        if val is not None and val != '':
+            params[cfn_prop] = val if not isinstance(val, (list, dict)) else str(val)
+
+    for param_name, param_config in params_config.items():
+        source = param_config.get('source')
+        if source:
+            val = config.get(source, '')
+            if val is not None and val != '':
+                params[param_name] = val if not isinstance(val, (list, dict)) else str(val)
+            else:
+                params[param_name] = f'REQUIRED - provide {param_name}'
+        else:
+            params[param_name] = f'REQUIRED - provide {param_name}'
+
+    return params
+
+
+# ═══════════════════════════════════════════════════════════════════
+# OUTPUT HELPERS
+# ═══════════════════════════════════════════════════════════════════
+
+def write_template(template, filepath):
+    """Write a CFN template as YAML."""
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(f"# Auto-generated by iac_blueprint.py\n")
-        f.write(f"# Generated: {datetime.now(tz=timezone.utc).isoformat()}\n")
         f.write(f"# Review and adjust parameters before deploying.\n")
         f.write(f"# ─────────────────────────────────────────────\n\n")
         yaml.dump(dict(template), f, default_flow_style=False,
@@ -1340,225 +1546,253 @@ def write_template(template: dict, filepath: str):
     print(f"  Written: {filepath}")
 
 
-def write_template_docs(template: dict, filepath: str, description: str,
-                        dependencies: List[str] = None):
+def write_template_docs(template, filepath, description, dependencies=None):
     """Write a .md documentation file for a CFN template."""
     with open(filepath, 'w', encoding='utf-8') as f:
         name = os.path.basename(filepath).replace('.md', '.yaml')
-        f.write(f"# {name}\n\n")
-        f.write(f"{description}\n\n")
-
+        f.write(f"# {name}\n\n{description}\n\n")
         if dependencies:
-            f.write("## Dependencies\n\n")
-            f.write("Deploy these stacks first:\n")
+            f.write("## Dependencies\n\nDeploy first:\n")
             for dep in dependencies:
                 f.write(f"- `{dep}`\n")
             f.write("\n")
-
         params = template.get('Parameters', {})
         if params:
-            f.write("## Parameters\n\n")
-            f.write("| Parameter | Type | Required | Description |\n")
+            f.write("## Parameters\n\n| Parameter | Type | Required | Description |\n")
             f.write("|-----------|------|----------|-------------|\n")
-            for pname, pconfig in params.items():
-                ptype = pconfig.get('Type', 'String')
-                has_default = 'Default' in pconfig
-                required = "No" if has_default else "**Yes**"
-                desc = pconfig.get('Description', '')
-                default = pconfig.get('Default', '')
-                if has_default and default != '':
-                    desc += f" (default: `{default}`)"
-                f.write(f"| `{pname}` | {ptype} | {required} | {desc} |\n")
+            for pname, pcfg in params.items():
+                ptype = pcfg.get('Type', 'String')
+                req = "No" if 'Default' in pcfg else "**Yes**"
+                desc = pcfg.get('Description', '')
+                f.write(f"| `{pname}` | {ptype} | {req} | {desc} |\n")
             f.write("\n")
-
         resources = template.get('Resources', {})
         if resources:
-            f.write("## Resources Created\n\n")
-            f.write(f"| Logical ID | Type |\n")
-            f.write(f"|------------|------|\n")
-            for rid, rconfig in resources.items():
-                rtype = rconfig.get('Type', 'Unknown')
-                f.write(f"| `{rid}` | `{rtype}` |\n")
-            f.write(f"\n**Total: {len(resources)} resources**\n")
-
+            f.write(f"## Resources ({len(resources)})\n\n")
+            for rid, rcfg in resources.items():
+                f.write(f"- `{rid}` ({rcfg.get('Type', '?')})\n")
     print(f"  Docs:    {filepath}")
 
 
-def write_manual_steps(manual_resources: List[dict], filepath: str):
-    """Write manual-steps.md listing resources that can't be CFN-managed."""
+def write_manual_steps(manual_resources, filepath):
+    """Write manual-steps.md."""
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write("# Manual Steps Required\n\n")
-        f.write("These resources were inventoried but cannot be fully reproduced\n")
-        f.write("via CloudFormation. Manual action is required.\n\n")
-
         if not manual_resources:
             f.write("*No manual steps identified.*\n")
             return
-
-        # Group by category
         from collections import defaultdict
-        by_category = defaultdict(list)
+        by_cat = defaultdict(list)
         for r in manual_resources:
-            by_category[r.get('category', 'Other')].append(r)
-
-        for category, resources in sorted(by_category.items()):
-            f.write(f"## {category}\n\n")
+            by_cat[r.get('category', 'Other')].append(r)
+        for cat, resources in sorted(by_cat.items()):
+            f.write(f"## {cat}\n\n")
             for r in resources:
                 f.write(f"- **{r.get('name', 'unnamed')}**")
                 if r.get('arn'):
                     f.write(f" (`{r['arn']}`)")
-                f.write(f"\n  - {r.get('reason', 'No CFN support or requires manual configuration')}\n")
+                f.write(f"\n  - {r.get('reason', 'Requires manual configuration')}\n")
             f.write("\n")
-
     print(f"  Manual:  {filepath}")
 
 
-def find_inventory_file(input_dir: str) -> Optional[str]:
+def find_inventory_file(input_dir):
     """Find the inventory YAML file in a run directory."""
-    import glob
-    pattern = os.path.join(input_dir, 'inventory-*.yaml')
-    matches = glob.glob(pattern)
-    if matches:
-        return matches[0]
-    return None
+    import glob as _glob
+    matches = _glob.glob(os.path.join(input_dir, 'inventory-*.yaml'))
+    return matches[0] if matches else None
 
+
+# ═══════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser(
-        description='IaC Blueprint — Generate CloudFormation templates from inventory.',
+        description='IaC Blueprint - Generate CloudFormation templates from inventory.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/
   python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/ --mode dr
-
-Filter files (optional, placed in the input directory):
-  include.yaml — force-include resources matching tag patterns
-  exclude.yaml — skip resources matching tag patterns
         """,
     )
     parser.add_argument('--input', required=True,
-                        help='Path to a discovery run directory (contains inventory-*.yaml)')
+                        help='Path to a discovery run directory')
     parser.add_argument('--mode', default='dr', choices=['import', 'dr'],
-                        help='Generation mode: import (exact state) or dr (parameterized)')
+                        help='Mode: import (exact state) or dr (parameterized)')
     args = parser.parse_args()
 
     input_dir = os.path.abspath(args.input)
     if not os.path.isdir(input_dir):
-        print(f"ERROR: Input directory does not exist: {input_dir}")
+        print(f"ERROR: Directory does not exist: {input_dir}")
         sys.exit(1)
 
-    # Find inventory file
     inventory_path = find_inventory_file(input_dir)
     if not inventory_path:
         print(f"ERROR: No inventory-*.yaml found in {input_dir}")
         sys.exit(1)
 
-    # Load inventory
-    print(f"Loading inventory: {inventory_path}")
+    print(f"Loading: {inventory_path}")
     with open(inventory_path, 'r', encoding='utf-8') as f:
         inventory = yaml.safe_load(f)
 
     region = inventory.get('metadata', {}).get('region', 'unknown')
     account = inventory.get('metadata', {}).get('account_id', 'unknown')
-    print(f"Account: {account}, Region: {region}")
-    print(f"Mode: {args.mode}")
+    print(f"Account: {account}, Region: {region}, Mode: {args.mode}")
 
-    # Load filter files from input directory
-    include_path = os.path.join(input_dir, 'include.yaml')
-    exclude_path = os.path.join(input_dir, 'exclude.yaml')
-    include_rules = load_filter_file(include_path)
-    exclude_rules = load_filter_file(exclude_path)
-
+    # Load filters
+    include_rules = load_filter_file(os.path.join(input_dir, 'include.yaml'))
+    exclude_rules = load_filter_file(os.path.join(input_dir, 'exclude.yaml'))
     if include_rules:
-        print(f"Include filter: {len(include_rules)} rules from {include_path}")
+        print(f"Include filter: {len(include_rules)} rules")
     if exclude_rules:
-        print(f"Exclude filter: {len(exclude_rules)} rules from {exclude_path}")
+        print(f"Exclude filter: {len(exclude_rules)} rules")
     if not include_rules and not exclude_rules:
-        print("No filter files — including all resources")
+        print("No filters - including all resources")
 
-    # Store filters in inventory for generators to access
     inventory['_include_rules'] = include_rules
     inventory['_exclude_rules'] = exclude_rules
 
-    # Output directory inside the run
+    # Output
     output_dir = os.path.join(input_dir, 'iac-templates')
-    os.makedirs(output_dir, exist_ok=True)
+    templates_dir = os.path.join(output_dir, 'templates')
+    params_dir = os.path.join(output_dir, 'params')
+    os.makedirs(templates_dir, exist_ok=True)
+    os.makedirs(params_dir, exist_ok=True)
 
-    # Count resources (applying filters)
-    print(f"\nResource breakdown (after filtering):")
+    # Count
+    print(f"\nResource breakdown:")
     total_included = 0
     total_excluded = 0
     for category, resources in inventory.get('resources', {}).items():
+        if category.startswith('_'):
+            continue
         included = [r for r in resources
                     if should_include_resource(r, include_rules, exclude_rules)]
         excluded_count = len(resources) - len(included)
         if included:
-            print(f"  {category:40s} {len(included):5d} included"
-                  f"{f' ({excluded_count} excluded)' if excluded_count else ''}")
+            print(f"  {category:40s} {len(included):5d}")
             total_included += len(included)
         total_excluded += excluded_count
-    print(f"\n  Total: {total_included} included, {total_excluded} excluded")
+    print(f"  {'TOTAL':40s} {total_included:5d} ({total_excluded} excluded)")
 
-    # Generate templates
-    print(f"\nGenerating templates in {output_dir}/...")
+    print(f"\nGenerating in {output_dir}/...")
 
-    # 01 — Security Groups
-    sg_template, sg_id_map = generate_sg_template(inventory)
-    write_template(sg_template, os.path.join(output_dir, '01-security-groups.yaml'))
-    write_template_docs(sg_template, os.path.join(output_dir, '01-security-groups.md'),
-                        'Security Groups — All customer SGs with ingress/egress rules '
-                        'and cross-SG references resolved via Ref.',
-                        dependencies=[])
-
-    # 02 — Data Tier (RDS + ElastiCache)
-    data_template = generate_data_template(inventory)
-    write_template(data_template, os.path.join(output_dir, '02-data-tier.yaml'))
-    write_template_docs(data_template, os.path.join(output_dir, '02-data-tier.md'),
-                        'Data Tier — RDS instances (from snapshots) and ElastiCache '
-                        'replication groups.',
-                        dependencies=['01-security-groups'])
-
-    # 03 — Compute Tier (EC2 instances)
-    compute_template = generate_compute_template(inventory, sg_id_map)
-    write_template(compute_template, os.path.join(output_dir, '03-compute-tier.yaml'))
-    write_template_docs(compute_template, os.path.join(output_dir, '03-compute-tier.md'),
-                        'Compute Tier — EC2 instances with per-instance AMI parameters '
-                        'and security group imports.',
-                        dependencies=['01-security-groups'])
-
-    # 03b — Supporting Services (ACM, SNS, SQS, DynamoDB, CloudWatch, WAF)
-    supporting_template = generate_supporting_template(inventory)
-    write_template(supporting_template, os.path.join(output_dir, '03b-supporting-services.yaml'))
-    write_template_docs(supporting_template, os.path.join(output_dir, '03b-supporting-services.md'),
-                        'Supporting Services — ACM certificates, SNS topics, SQS queues, '
-                        'DynamoDB tables, CloudWatch alarms, WAF Web ACLs.',
-                        dependencies=['01-security-groups'])
-
-    # 04 — Network Tier (LBs, listeners, TGs)
-    network_template = generate_network_template(inventory)
-    write_template(network_template, os.path.join(output_dir, '04-network-tier.yaml'))
-    write_template_docs(network_template, os.path.join(output_dir, '04-network-tier.md'),
-                        'Network Tier — Load balancers, listeners, and target groups. '
-                        'TLS listeners require ACM certificates from 03b.',
-                        dependencies=['01-security-groups', '03b-supporting-services'])
-
-    # 05 — Serverless Tier (Lambda, Step Functions, EventBridge, API GW)
-    serverless_template = generate_serverless_template(inventory)
-    write_template(serverless_template, os.path.join(output_dir, '05-serverless-tier.yaml'))
-    write_template_docs(serverless_template, os.path.join(output_dir, '05-serverless-tier.md'),
-                        'Serverless Tier — Lambda functions, Step Functions state machines, '
-                        'EventBridge rules, and API Gateways.',
-                        dependencies=['01-security-groups'])
-
-    # Manual steps — resources that can't be CFN-managed
-    # TODO: populate this from inventory analysis
     manual_resources = []
+    deploy_commands = []
+    import json as _json
+
+    # ── Generic loop: one template per type, one param file per resource ──
+    for category, resources in inventory.get('resources', {}).items():
+        if category.startswith('_'):
+            continue
+        if category == 'Security Groups':
+            continue  # Handled by bespoke generator
+
+        included = [r for r in resources
+                    if should_include_resource(r, include_rules, exclude_rules)]
+        if not included:
+            continue
+
+        if category in NO_CFN_SUPPORT:
+            for r in included:
+                manual_resources.append({
+                    'name': r.get('name', 'unnamed'),
+                    'arn': r.get('config', {}).get('Arn', r.get('resource_id', '')),
+                    'category': category,
+                    'reason': 'Contains secrets or requires manual configuration',
+                })
+            continue
+
+        if category not in CFN_TYPE_MAP:
+            for r in included:
+                manual_resources.append({
+                    'name': r.get('name', 'unnamed'),
+                    'arn': r.get('config', {}).get('Arn', r.get('resource_id', '')),
+                    'category': category,
+                    'reason': f'No CFN mapping for "{category}" - add to CFN_TYPE_MAP',
+                })
+            continue
+
+        type_config = CFN_TYPE_MAP[category]
+        safe_cat = re.sub(r'[^a-zA-Z0-9]', '-', category).lower().strip('-')
+        tmpl_file = f'{safe_cat}.yaml'
+
+        template = generate_generic_template(category, type_config)
+        write_template(template, os.path.join(templates_dir, tmpl_file))
+        write_template_docs(template, os.path.join(templates_dir, f'{safe_cat}.md'),
+                            f'{category} - {type_config["cfn_type"]}. '
+                            f'{len(included)} parameter files.',
+                            dependencies=[])
+
+        cat_params_dir = os.path.join(params_dir, safe_cat)
+        os.makedirs(cat_params_dir, exist_ok=True)
+
+        for r in included:
+            name = r.get('name', r.get('resource_id', 'unnamed'))
+            safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:60]
+            pfile = generate_parameter_file(r, category, type_config)
+            ppath = os.path.join(cat_params_dir, f'{safe_name}.json')
+            with open(ppath, 'w', encoding='utf-8') as f:
+                _json.dump(pfile, f, indent=2, default=str)
+
+            deploy_commands.append({
+                'category': category,
+                'stack_name': f'iac-{safe_cat}-{safe_name}'[:128],
+                'template': f'templates/{tmpl_file}',
+                'params': f'params/{safe_cat}/{safe_name}.json',
+                'resource_name': name,
+            })
+
+        print(f"  {category:40s} 1 template, {len(included)} param files")
+
+    # ── Bespoke: Security Groups ──
+    all_sgs = inventory.get('resources', {}).get('Security Groups', [])
+    sg_included = [sg for sg in all_sgs
+                   if should_include_resource(sg, include_rules, exclude_rules)]
+    if sg_included:
+        sg_template, sg_id_map = generate_sg_template(inventory)
+        write_template(sg_template, os.path.join(output_dir, '01-security-groups.yaml'))
+        write_template_docs(sg_template, os.path.join(output_dir, '01-security-groups.md'),
+                            f'Security Groups - {len(sg_included)} SGs with cross-references.',
+                            dependencies=[])
+        print(f"  {'Security Groups (bespoke)':40s} 1 consolidated template")
+
+    # ── Manual steps ──
     write_manual_steps(manual_resources, os.path.join(output_dir, 'manual-steps.md'))
 
-    print(f"\nDone. Templates are in {output_dir}/")
-    print(f"Deploy in order: 01 → 02 → 03 → 03b → 04 → 05")
-    print(f"Review parameters in each template and manual-steps.md before deploying.")
+    # ── DEPLOY.md ──
+    deploy_path = os.path.join(output_dir, 'DEPLOY.md')
+    with open(deploy_path, 'w', encoding='utf-8') as f:
+        f.write(f"# Deployment Orchestration\n\n")
+        f.write(f"Account: {account} | Region: {region}\n\n")
+        f.write("## Order\n\n1. `01-security-groups.yaml`\n2. Per-resource stacks\n\n")
+        f.write("## Security Groups\n\n```bash\n")
+        f.write("aws cloudformation deploy \\\n")
+        f.write("  --template-file 01-security-groups.yaml \\\n")
+        f.write("  --stack-name iac-security-groups \\\n")
+        f.write("  --parameter-overrides VpcId=<VPC_ID> VpcCidr=<CIDR>\n```\n\n")
+        from collections import defaultdict
+        by_cat = defaultdict(list)
+        for cmd in deploy_commands:
+            by_cat[cmd['category']].append(cmd)
+        for cat, cmds in sorted(by_cat.items()):
+            f.write(f"## {cat} ({len(cmds)})\n\n")
+            for cmd in cmds:
+                f.write(f"### {cmd['resource_name']}\n```bash\n")
+                f.write(f"aws cloudformation deploy \\\n")
+                f.write(f"  --template-file {cmd['template']} \\\n")
+                f.write(f"  --stack-name {cmd['stack_name']} \\\n")
+                f.write(f"  --parameter-overrides file://{cmd['params']}\n```\n\n")
+    print(f"  {'DEPLOY.md':40s} orchestration guide")
+
+    print(f"\nDone. Output: {output_dir}/")
+    print(f"  templates/  - shared CFN templates (one per resource type)")
+    print(f"  params/     - per-resource parameter files")
+    print(f"  DEPLOY.md   - deployment commands")
+    if manual_resources:
+        print(f"  manual-steps.md - {len(manual_resources)} resources need manual action")
 
 
 if __name__ == "__main__":
