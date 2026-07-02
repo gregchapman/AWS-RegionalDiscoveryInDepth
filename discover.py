@@ -98,16 +98,28 @@ def step_completed(run_dir: str, step: str) -> bool:
         return os.path.isfile(os.path.join(run_dir, 'enum-results.yaml'))
 
     elif step == 'auto-template':
-        auto_dir = os.path.join(run_dir, 'auto-templates')
-        if not os.path.isdir(auto_dir):
-            return False
-        return len(_glob.glob(os.path.join(auto_dir, '*.yaml'))) > 0
+        # Check both old and new folder names for backwards compatibility
+        for dirname in ('_discovery-schemas', 'auto-templates'):
+            auto_dir = os.path.join(run_dir, dirname)
+            if os.path.isdir(auto_dir):
+                if len(_glob.glob(os.path.join(auto_dir, '*.yaml'))) > 0:
+                    return True
+        return False
 
     elif step == 'deep-discover':
         return len(_glob.glob(os.path.join(run_dir, 'inventory-*.yaml'))) > 0
 
     elif step == 'graph':
         return len(_glob.glob(os.path.join(run_dir, 'architecture-*.md'))) > 0
+
+    elif step == 'iac-blueprint':
+        iac_dir = os.path.join(run_dir, 'iac-templates')
+        if not os.path.isdir(iac_dir):
+            return False
+        templates_dir = os.path.join(iac_dir, 'templates')
+        if not os.path.isdir(templates_dir):
+            return False
+        return len(_glob.glob(os.path.join(templates_dir, '*.yaml'))) > 0
 
     return False
 
@@ -181,8 +193,14 @@ Examples:
         run_dir = os.path.join(SCRIPT_DIR, 'output', label, region, timestamp)
         os.makedirs(run_dir, exist_ok=True)
 
-    auto_template_dir = os.path.join(run_dir, 'auto-templates')
-    os.makedirs(auto_template_dir, exist_ok=True)
+    # Use _discovery-schemas for new runs; fall back to auto-templates for resumed old runs
+    auto_template_dir = os.path.join(run_dir, '_discovery-schemas')
+    old_auto_dir = os.path.join(run_dir, 'auto-templates')
+    if os.path.isdir(old_auto_dir) and not os.path.isdir(auto_template_dir):
+        # Resuming an old run — use the existing folder
+        auto_template_dir = old_auto_dir
+    else:
+        os.makedirs(auto_template_dir, exist_ok=True)
 
     enum_output = os.path.join(run_dir, 'enum-results.yaml')
     template_dir = os.path.join(SCRIPT_DIR, 'templates')
@@ -264,6 +282,26 @@ Examples:
                 errors.append("Graph discovery failed; "
                               "inventory files are still available")
 
+    # ── Step 5: IaC Blueprint Generation ──
+    if step_completed(run_dir, 'iac-blueprint'):
+        print(f"\n  ⏭  IaC Blueprint: already completed, skipping")
+    else:
+        inventory_file = os.path.join(run_dir, f'inventory-{region}.yaml')
+        if not os.path.isfile(inventory_file):
+            msg = f"Inventory file not found for IaC generation: {inventory_file}"
+            errors.append(msg)
+            print(f"\n  ✗ {msg}")
+        else:
+            ok = run_step('IaC Blueprint Generation', [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, 'iac_blueprint.py'),
+                '--input', run_dir,
+            ], errors)
+            if not ok:
+                errors.append("IaC blueprint generation failed; "
+                              "inventory and architecture docs are still available")
+                print("  ⚠  Continuing without IaC templates")
+
     # ── Write error log ──
     write_errors(run_dir, errors, region, label)
 
@@ -278,12 +316,33 @@ Examples:
         print(f"  Errors: none")
     print(f"{'═' * 60}")
 
+    # Highlight key deliverables
+    iac_dir = os.path.join(run_dir, 'iac-templates')
+    if os.path.isdir(iac_dir):
+        print(f"\n  ╭─ DELIVERABLES ──────────────────────────────────────╮")
+        print(f"  │  CloudFormation Templates:  iac-templates/templates/ │")
+        print(f"  │  Parameter Files:           iac-templates/params/    │")
+        print(f"  │  Deployment Guide:          iac-templates/DEPLOY.md  │")
+        print(f"  │  Architecture Docs:         architecture-*.md        │")
+        print(f"  ╰─────────────────────────────────────────────────────╯")
+    else:
+        print(f"\n  ╭─ DELIVERABLES ──────────────────────────────────────╮")
+        print(f"  │  Inventory:         inventory-{region}.yaml")
+        print(f"  │  Architecture Docs: architecture-*.md")
+        print(f"  │  NOTE: IaC templates were not generated (see errors) │")
+        print(f"  ╰─────────────────────────────────────────────────────╯")
+
+    print(f"\n  All output files:")
+
     # List what was produced
     for f in sorted(os.listdir(run_dir)):
         full = os.path.join(run_dir, f)
         if os.path.isdir(full):
             count = len([x for x in os.listdir(full) if x.endswith('.yaml')])
-            print(f"    📁 {f}/ ({count} templates)")
+            if f.startswith('_'):
+                print(f"    📁 {f}/ ({count} files) [internal]")
+            else:
+                print(f"    📁 {f}/ ({count} files)")
         else:
             size = os.path.getsize(full)
             if size > 1024 * 1024:
