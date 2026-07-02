@@ -82,119 +82,29 @@ categories:
 
 ## Template Generator — IaC from Inventory
 
-### Vision
+### Status: DONE (integrated as Step 5)
 
-Extend `template_generator.py` to generate CloudFormation templates for
-ALL inventoried resources, not just the current DR-focused subset. The
-goal: "We not only captured everything but we can reproduce it as proof."
+`iac_blueprint.py` now runs automatically as Step 5 of the `discover.py`
+pipeline. The original `template_generator.py` concept has been fully
+implemented and renamed to `iac_blueprint.py`.
 
-This steps beyond inventory and diagrams into codifying environment
-replication, one-for-one.
-
-### Architecture
-
-```
-template_generator.py (lives at repo root)
-  --input output/<label>/<region>/<timestamp>/
-  --include <input-path>/include.yaml   (optional)
-  --exclude <input-path>/exclude.yaml   (optional)
-  --mode import|dr
-
-Output lands INSIDE the input path:
-  output/<label>/<region>/<timestamp>/
-    ├── iac-templates/
-    │   ├── 01-security-groups.yaml
-    │   ├── 01-security-groups.md        ← parameter docs
-    │   ├── 02-data-tier.yaml
-    │   ├── 02-data-tier.md
-    │   ├── ...
-    │   └── manual-steps.md              ← resources that can't be CFN-managed
-    ├── include.yaml                     ← user creates here
-    └── exclude.yaml                     ← user creates here
-```
-
-### Filter Logic (include/exclude)
-
-Both files are lists of tag Key:Value patterns (supports wildcards):
-
-```yaml
-# exclude.yaml
-- Key: aws:cloudformation:stack-name
-  Value: "*Ccpm*"
-- Key: ManagedBy
-  Value: "terraform"
-
-# include.yaml
-- Key: DR
-  Value: "required"
-- Key: Project
-  Value: "txwise"
-```
-
-**Precedence:**
-1. Resource matches include → always generate (overrides exclude)
-2. Resource matches exclude and NOT include → skip
-3. Both files empty → include everything
-4. Include empty → include everything except exclude matches
-
-### Modes
-
-- **`import`** — Generates templates matching current state exactly.
-  For CFN resource import or environment cloning.
-- **`dr`** — Parameterizes region-specific values (AMIs, snapshots,
-  subnets, certs, endpoints). Current template_generator behavior.
-
-### Output Per Template
-
-Each `.yaml` template gets a matching `.md` file documenting:
-- Template purpose and what resources it creates
-- Every parameter: name, type, what it expects, required vs optional
-- Cross-stack dependencies (which stacks must deploy first)
-- Manual steps required after deployment
-
-### `manual-steps.md`
-
-Resources that can't be fully reproduced via CFN:
-- Lists each resource by name and ARN
-- Describes what manual action is needed (e.g., "enable cross-region
-  replication on S3 bucket X", "restore DynamoDB table from backup",
-  "configure Route53 health checks")
-- Groups by priority/dependency order
-
-### Dependency Ordering
-
-Assumed deployment order (can be refined later):
-1. Security Groups (no dependencies)
-2. Data Tier — RDS, ElastiCache, DynamoDB (needs SGs, subnets)
-3. Compute Tier — EC2, ASG (needs SGs, subnets, AMIs)
-4. Supporting Services — ACM, SNS, SQS, CloudWatch, WAF
-5. Network Tier — LBs, listeners, TGs (needs SGs, subnets, certs, compute)
-6. Serverless — Lambda, Step Functions, EventBridge, API GW (needs roles, VPC)
-7. DNS — Route53 records (needs LB endpoints, instance IPs)
-
-### What Needs to Mature
+### Remaining Enhancements
 
 - **Secondary calls** in deep_discover.py (S3 replication config, DynamoDB
-  table details, Lambda code locations, Step Function definitions)
-- **Per-resource-type generators** for complex resources (SGs with
-  cross-refs, RDS from snapshots, Lambda with S3 code packages)
-- **Generic generator** for simple resources (SNS, SQS, DynamoDB) that
-  maps inventory config fields directly to CFN properties
-- **Validation** — can we lint the generated templates before writing?
+  table details, Lambda code locations, Step Function definitions) would
+  improve the quality of generated templates
+- **CFN Linting** — validate generated templates with cfn-lint before writing
+- **Additional resource types** — EKS, ECR, ECS services, API Gateway
+  need hand-crafted templates before they can produce good IaC output
+- **Mode: import** — Currently only `dr` mode is well-tested. The `import`
+  mode (exact state reproduction) needs validation
 
 ### Integration with discover.py
 
-`template_generator.py` is NOT part of the main pipeline. It's a
-separate tool run after discovery completes:
+`iac_blueprint.py` IS now part of the main pipeline (Step 5). It runs
+automatically after graph discovery completes. Users can also re-run it
+standalone to regenerate templates after modifying include/exclude filters:
 
 ```bash
-# Run discovery first
-python3 discover.py --label acme-prod --region us-east-1
-
-# Then generate IaC from the results
-python3 template_generator.py \
-  --input output/acme-prod/us-east-1/20260505-151053/
+python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/
 ```
-
-The user creates `include.yaml` and `exclude.yaml` in the run directory
-before running the generator. If they don't exist, everything is included.

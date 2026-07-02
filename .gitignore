@@ -9,6 +9,7 @@
 # ── Scan output (all formats, any output folder) ──
 output/
 *-output/
+**/iac-templates/
 
 # ── Service enumerator results ──
 # These contain account IDs, service lists, and resource counts.
@@ -28,6 +29,8 @@ TG-*.yaml
 # Auto-generated ones are derived from live account introspection.
 templates/auto/
 templates/*-auto/
+**/_discovery-schemas/
+**/auto-templates/
 
 # ── Zone.Identifier files (WSL/Windows artifact) ──
 *.Identifier

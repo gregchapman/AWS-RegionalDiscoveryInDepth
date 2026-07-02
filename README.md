@@ -6,14 +6,15 @@ Exhaustively inventories an AWS account/region and produces output for
 diagramming tools, DR planning, compliance audits, cost analysis, and
 audience-specific architecture views.
 
-Four scripts, one orchestrator:
+Five scripts, one orchestrator:
 
 | Script | Purpose | Speed |
 |--------|---------|-------|
 | `service_enumerator.py` | Fast scan — what services have resources? | ~90s |
-| `auto_template.py` | Generate discovery templates for found services | ~30s |
+| `auto_template.py` | Generate discovery schemas for found services | ~30s |
 | `deep_discover.py` | Detailed inventory using all templates | ~60s |
 | `graph_discover.py` | Audience-driven architecture views + draw.io diagram | ~10s |
+| `iac_blueprint.py` | CloudFormation templates from inventory | ~15s |
 | **`discover.py`** | **Orchestrator — runs the full pipeline with resume** | — |
 
 ## Quick Start
@@ -40,7 +41,7 @@ output/
     └── <region>/
         └── <YYYYMMDD-HHMMSS>/
             ├── enum-results.yaml              # Step 1: service enumeration
-            ├── auto-templates/                 # Step 2: generated templates
+            ├── _discovery-schemas/            # Step 2: API discovery schemas (internal)
             │   ├── stepfunctions.yaml
             │   ├── codebuild.yaml
             │   └── ...
@@ -53,6 +54,11 @@ output/
             ├── architecture-engineering-<region>.md
             ├── architecture-operations-<region>.md
             ├── architecture-<region>.drawio          # Native draw.io diagram
+            ├── iac-templates/                        # Step 5: CloudFormation templates
+            │   ├── templates/                        #   One CFN template per resource type
+            │   ├── params/                           #   Per-resource parameter files
+            │   ├── DEPLOY.md                         #   Deployment orchestration
+            │   └── manual-steps.md                   #   Resources needing manual action
             └── errors.md                             # Error log for this run
 ```
 
@@ -67,9 +73,10 @@ python3 discover.py --resume output/acme-prod/us-east-1/20260504-183545/
 
 The orchestrator checks for step completion markers in the run directory:
 - `enum-results.yaml` exists → skip enumeration
-- `auto-templates/*.yaml` exist → skip template generation
+- `_discovery-schemas/*.yaml` exist → skip template generation
 - `inventory-*.yaml` exists → skip deep discovery
 - `architecture-*.md` exists → skip graph discovery
+- `iac-templates/templates/*.yaml` exist → skip IaC blueprint generation
 
 Only incomplete steps re-run. Completed steps are never repeated.
 
@@ -268,13 +275,17 @@ filters. 22 templates included covering core AWS services:
 `secretsmanager`, `security_groups`, `sns`, `ssm`, `tgw`, `vpc`,
 `vpc_endpoints`, `vpc_peering`, `wafv2`
 
-### Auto-Generated (`auto-templates/` in run directory)
+### Auto-Generated (`_discovery-schemas/` in run directory)
 
 Created by `auto_template.py` from boto3 service model introspection.
 Captures resource IDs, names, and top-level config fields. Good enough
 for inventory — review and promote to `templates/` for production use.
 
 Hand-crafted templates always take precedence over auto-generated ones.
+
+**Note:** The `_discovery-schemas/` folder contains API discovery schemas
+used internally by `deep_discover.py`. These are NOT CloudFormation
+templates. Deployable CloudFormation templates are in `iac-templates/`.
 
 ### Adding a New Template
 
@@ -343,17 +354,23 @@ discover.py (orchestrator, --resume support)
   │    → enum-results.yaml
   │
   ├─ Step 2: auto_template.py
-  │    Generate templates for services without hand-crafted ones
-  │    → auto-templates/*.yaml
+  │    Generate discovery schemas for services without hand-crafted ones
+  │    → _discovery-schemas/*.yaml
   │
   ├─ Step 3: deep_discover.py
   │    Template-driven detailed inventory
   │    → inventory.yaml, .json, .csv, .mermaid.md, summary.txt
   │
-  └─ Step 4: graph_discover.py
-       Audience-driven architecture views + draw.io diagram
-       → architecture-{audience}-{region}.md
-       → architecture-{region}.drawio
+  ├─ Step 4: graph_discover.py
+  │    Audience-driven architecture views + draw.io diagram
+  │    → architecture-{audience}-{region}.md
+  │    → architecture-{region}.drawio
+  │
+  └─ Step 5: iac_blueprint.py
+       CloudFormation templates from inventory
+       → iac-templates/templates/*.yaml
+       → iac-templates/params/*/*.json
+       → iac-templates/DEPLOY.md
 
 All output lands in: output/<label>/<region>/<YYYYMMDD-HHMMSS>/
 ```
@@ -383,7 +400,8 @@ pipeline with a message to fix the issue and `--resume`.
 ## IaC Blueprint (`iac_blueprint.py`)
 
 Transforms a discovery inventory into deployable CloudFormation templates.
-Run it AFTER discovery completes — it's not part of the automated pipeline.
+Runs automatically as Step 5 of the pipeline. Can also be run standalone
+to regenerate templates (e.g., after modifying include/exclude filters).
 
 **Philosophy:** The inventory proves what exists. The blueprint proves we
 can reproduce it. One shared template per resource type, one parameter
