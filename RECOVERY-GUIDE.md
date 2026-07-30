@@ -24,17 +24,19 @@ After a run you have this tree:
 output/<label>/<region>/<timestamp>/
 ├── inventory-<region>.yaml        ← The source of truth. Everything discovered.
 ├── summary.txt                    ← Quick resource counts per category
+├── dr-gaps.md                     ← START HERE: DR readiness gap report
 ├── iac-templates/
 │   ├── DEPLOY.md                  ← Stack deployment commands in order
 │   ├── manual-steps.md            ← Things that can't be automated
 │   ├── templates/*.yaml           ← One CFN template per resource type
 │   └── params/*/*.json            ← One param file per resource instance
-├── architecture-operations-*.md   ← Recovery-focused view (start here)
+├── architecture-operations-*.md   ← Recovery-focused view
 └── architecture-engineering-*.md  ← Full technical detail
 ```
 
-**Start here:** `architecture-operations-<region>.md` — it's organized by
-recovery priority and calls out dependency chains and DR notes.
+**Start here:** `dr-gaps.md` — it tells you what's broken, what's missing,
+and what order to fix things in. Then use `architecture-operations-*.md`
+for the full dependency chain detail.
 
 ## Step 1: Assess — What Do We Have?
 

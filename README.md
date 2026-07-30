@@ -20,6 +20,7 @@ Five scripts, one orchestrator:
 | `deep_discover.py` | Detailed inventory using all templates | ~60s |
 | `graph_discover.py` | Audience-driven architecture views + draw.io diagram | ~10s |
 | `iac_blueprint.py` | CloudFormation templates from inventory | ~15s |
+| `dr_assess.py` | DR readiness gap analysis from inventory | ~5s |
 | **`discover.py`** | **Orchestrator — runs the full pipeline with resume** | — |
 
 ## Quick Start
@@ -64,6 +65,7 @@ output/
             │   ├── params/                           #   Per-resource parameter files
             │   ├── DEPLOY.md                         #   Deployment orchestration
             │   └── manual-steps.md                   #   Resources needing manual action
+            ├── dr-gaps.md                            # Step 6: DR readiness gap report
             └── errors.md                             # Error log for this run
 ```
 
@@ -82,6 +84,7 @@ The orchestrator checks for step completion markers in the run directory:
 - `inventory-*.yaml` exists → skip deep discovery
 - `architecture-*.md` exists → skip graph discovery
 - `iac-templates/templates/*.yaml` exist → skip IaC blueprint generation
+- `dr-gaps.md` exists → skip DR assessment
 
 Only incomplete steps re-run. Completed steps are never repeated.
 
@@ -416,11 +419,15 @@ discover.py (orchestrator, --resume support)
   │    → architecture-{audience}-{region}.md
   │    → architecture-{region}.drawio
   │
-  └─ Step 5: iac_blueprint.py
-       CloudFormation templates from inventory
-       → iac-templates/templates/*.yaml
-       → iac-templates/params/*/*.json
-       → iac-templates/DEPLOY.md
+  ├─ Step 5: iac_blueprint.py
+  │    CloudFormation templates from inventory
+  │    → iac-templates/templates/*.yaml
+  │    → iac-templates/params/*/*.json
+  │    → iac-templates/DEPLOY.md
+  │
+  └─ Step 6: dr_assess.py
+       DR readiness gap analysis from inventory
+       → dr-gaps.md (severity-ranked findings + recovery sequence)
 
 All output lands in: output/<label>/<region>/<YYYYMMDD-HHMMSS>/
 ```

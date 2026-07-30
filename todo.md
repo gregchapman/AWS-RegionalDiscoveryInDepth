@@ -34,20 +34,25 @@ New templates for comprehensive backup/replication gap analysis:
 CFN_TYPE_MAP expanded from 24 to 53 entries. Added BESPOKE_HANDLED set
 for categories that have custom generators or are purely diagnostic.
 
+### DR Readiness Assessment (`dr_assess.py`) — DONE
+
+Standalone script (also integrated as Step 6 in `discover.py`) that reads
+inventory and produces `dr-gaps.md`:
+
+- 10 severity-ranked checks (Critical, High, Medium, Info)
+- DNS/AD boot-order dependency detection from DHCP options
+- S3 versioning and CRR gap analysis (per-bucket)
+- Secrets Manager replication status check
+- AWS Backup plan and coverage analysis
+- EBS snapshot coverage vs DLM policy analysis
+- AMI ownership gap (marketplace AMIs used but not owned)
+- FSx backup and cross-region copy readiness
+- SSM Parameter Store replication needs
+- VPN connectivity DR considerations
+- Target group re-registration requirements
+- Recommended recovery sequence based on findings
+
 ## In Progress
-
-### DR Readiness Assessment Module (`dr_assess.py`)
-
-A standalone script that reads inventory output and produces a gap report:
-
-- Buckets without CRR (compare S3 Buckets vs S3 Replication)
-- Volumes without snapshot coverage (EBS Volumes vs DLM policies vs Protected Resources)
-- Secrets without replication (Secrets without ReplicationStatus)
-- AMIs/snapshots only in source region (no cross-region copies detected)
-- Boot-order dependency mapping (DHCP → DCs → FSx → workloads)
-- FSx without cross-region backup copies
-
-Output: `dr-gaps.md` — actionable gap report with remediation steps
 
 ### Remediation IaC Generator
 

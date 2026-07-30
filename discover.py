@@ -121,6 +121,9 @@ def step_completed(run_dir: str, step: str) -> bool:
             return False
         return len(_glob.glob(os.path.join(templates_dir, '*.yaml'))) > 0
 
+    elif step == 'dr-assess':
+        return os.path.isfile(os.path.join(run_dir, 'dr-gaps.md'))
+
     return False
 
 
@@ -302,6 +305,25 @@ Examples:
                               "inventory and architecture docs are still available")
                 print("  ⚠  Continuing without IaC templates")
 
+    # ── Step 6: DR Readiness Assessment ──
+    if step_completed(run_dir, 'dr-assess'):
+        print(f"\n  ⏭  DR Assessment: already completed, skipping")
+    else:
+        inventory_file = os.path.join(run_dir, f'inventory-{region}.yaml')
+        if not os.path.isfile(inventory_file):
+            msg = f"Inventory file not found for DR assessment: {inventory_file}"
+            errors.append(msg)
+            print(f"\n  ✗ {msg}")
+        else:
+            ok = run_step('DR Readiness Assessment', [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, 'dr_assess.py'),
+                '--input', run_dir,
+            ], errors)
+            if not ok:
+                errors.append("DR assessment failed; other deliverables are still available")
+                print("  ⚠  Continuing without DR gap report")
+
     # ── Write error log ──
     write_errors(run_dir, errors, region, label)
 
@@ -324,6 +346,7 @@ Examples:
         print(f"  │  Parameter Files:           iac-templates/params/    │")
         print(f"  │  Deployment Guide:          iac-templates/DEPLOY.md  │")
         print(f"  │  Architecture Docs:         architecture-*.md        │")
+        print(f"  │  DR Gap Report:             dr-gaps.md               │")
         print(f"  ╰─────────────────────────────────────────────────────╯")
     else:
         print(f"\n  ╭─ DELIVERABLES ──────────────────────────────────────╮")
