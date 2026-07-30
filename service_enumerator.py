@@ -44,6 +44,44 @@ def tprint(*args, **kwargs):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# CREDENTIAL PRE-CACHING
+#
+# When running with high parallelism, many threads hitting the IMDS
+# or container credential endpoint simultaneously can overwhelm it.
+# Pre-fetching credentials once and sharing them across threads avoids
+# this contention entirely.
+# ═══════════════════════════════════════════════════════════════════
+
+_cached_credentials = None  # Set by enumerate_services() before threads launch
+
+
+def _get_session(region: str):
+    """Create a boto3 session using pre-cached credentials if available.
+    
+    Falls back to default credential chain if cache is empty.
+    """
+    if _cached_credentials:
+        return boto3.Session(
+            region_name=region,
+            aws_access_key_id=_cached_credentials['AccessKeyId'],
+            aws_secret_access_key=_cached_credentials['SecretAccessKey'],
+            aws_session_token=_cached_credentials.get('SessionToken'),
+        )
+    return boto3.Session(region_name=region)
+
+
+# Maximum retries for transient credential/connection errors
+MAX_RETRIES = 3
+RETRY_ERRORS = (
+    'CredentialRetrievalError',
+    'MetadataRetrievalError',
+    'ConnectTimeoutError',
+    'ReadTimeoutError',
+    'ConnectionClosedError',
+)
+
+
+# ═══════════════════════════════════════════════════════════════════
 # SERVICE INTROSPECTION
 # ═══════════════════════════════════════════════════════════════════
 
@@ -273,6 +311,8 @@ def probe_service(service_name: str, region: str) -> Dict:
         count: approximate resource count
         error: error message if any
         elapsed: time taken in seconds
+    
+    Retries up to MAX_RETRIES times on transient credential/connection errors.
     """
     start = time.time()
     result = {
@@ -283,70 +323,93 @@ def probe_service(service_name: str, region: str) -> Dict:
         'error': '',
         'elapsed': 0,
     }
-    
-    try:
-        # Create a client for this service in the target region
-        session = boto3.Session(region_name=region)
-        client = session.client(service_name)
-        
-        # Find the best list operation
-        operation = find_list_operation(service_name, client)
-        if not operation:
-            result['status'] = 'no_list_op'
-            result['elapsed'] = time.time() - start
-            return result
-        
-        result['operation'] = operation
-        
-        # Call the operation
-        method = getattr(client, operation)
-        
-        # Some operations need special kwargs
-        kwargs = {}
-        if service_name == 'wafv2' and operation == 'list_web_acls':
-            kwargs['Scope'] = 'REGIONAL'
-        if service_name == 'cognito-identity' and operation == 'list_identity_pools':
-            kwargs['MaxResults'] = 10
-        if service_name == 'cognito-idp' and operation == 'list_user_pools':
-            kwargs['MaxResults'] = 10
-        if service_name == 'ram' and operation == 'list_resources':
-            kwargs['resourceOwner'] = 'SELF'
-            kwargs['resourceType'] = 'ec2:Subnet'  # Just check one type
-        
-        response = method(**kwargs)
-        
-        # Count resources in the response
-        count = count_resources_in_response(response)
-        result['count'] = count
-        result['status'] = 'found' if count > 0 else 'empty'
-        
-    except botocore.exceptions.ClientError as e:
-        error_code = e.response.get('Error', {}).get('Code', '')
-        if error_code in ('AccessDeniedException', 'AccessDenied',
-                          'UnauthorizedAccess', 'AuthorizationError'):
-            result['status'] = 'access_denied'
-            result['error'] = error_code
-        elif error_code in ('UnrecognizedClientException',
-                            'InvalidClientTokenId'):
-            result['status'] = 'access_denied'
-            result['error'] = 'Invalid credentials for this service'
-        else:
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Use pre-cached credentials to avoid IMDS contention
+            session = _get_session(region)
+            client = session.client(service_name)
+
+            # Find the best list operation
+            operation = find_list_operation(service_name, client)
+            if not operation:
+                result['status'] = 'no_list_op'
+                result['elapsed'] = time.time() - start
+                return result
+
+            result['operation'] = operation
+
+            # Call the operation
+            method = getattr(client, operation)
+
+            # Some operations need special kwargs
+            kwargs = {}
+            if service_name == 'wafv2' and operation == 'list_web_acls':
+                kwargs['Scope'] = 'REGIONAL'
+            if service_name == 'cognito-identity' and operation == 'list_identity_pools':
+                kwargs['MaxResults'] = 10
+            if service_name == 'cognito-idp' and operation == 'list_user_pools':
+                kwargs['MaxResults'] = 10
+            if service_name == 'ram' and operation == 'list_resources':
+                kwargs['resourceOwner'] = 'SELF'
+                kwargs['resourceType'] = 'ec2:Subnet'  # Just check one type
+
+            response = method(**kwargs)
+
+            # Count resources in the response
+            count = count_resources_in_response(response)
+            result['count'] = count
+            result['status'] = 'found' if count > 0 else 'empty'
+            break  # Success — exit retry loop
+
+        except botocore.exceptions.ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in ('AccessDeniedException', 'AccessDenied',
+                              'UnauthorizedAccess', 'AuthorizationError'):
+                result['status'] = 'access_denied'
+                result['error'] = error_code
+                break  # Not retryable
+            elif error_code in ('UnrecognizedClientException',
+                                'InvalidClientTokenId'):
+                result['status'] = 'access_denied'
+                result['error'] = 'Invalid credentials for this service'
+                break  # Not retryable
+            else:
+                result['status'] = 'error'
+                result['error'] = f'{error_code}: {str(e)[:200]}'
+                break  # API errors are not retryable
+
+        except botocore.exceptions.EndpointConnectionError:
+            result['status'] = 'not_in_region'
+            result['error'] = 'Endpoint not available in region'
+            break  # Not retryable
+
+        except botocore.exceptions.NoRegionError:
             result['status'] = 'error'
-            result['error'] = f'{error_code}: {str(e)[:200]}'
-    
-    except botocore.exceptions.EndpointConnectionError:
-        # Service not available in this region
-        result['status'] = 'not_in_region'
-        result['error'] = 'Endpoint not available in region'
-    
-    except botocore.exceptions.NoRegionError:
-        result['status'] = 'error'
-        result['error'] = 'No region specified'
-    
-    except Exception as e:
-        result['status'] = 'error'
-        result['error'] = f'{type(e).__name__}: {str(e)[:200]}'
-    
+            result['error'] = 'No region specified'
+            break  # Not retryable
+
+        except Exception as e:
+            error_name = type(e).__name__
+            error_msg = str(e)[:200]
+
+            # Check if this is a retryable credential/connection error
+            is_retryable = any(err in error_name or err in error_msg
+                               for err in RETRY_ERRORS)
+
+            if is_retryable and attempt < MAX_RETRIES - 1:
+                # Wait with exponential backoff before retry
+                wait = (attempt + 1) * 2  # 2s, 4s
+                tprint(f"    ⟳ {service_name}: credential/connection error, retrying in {wait}s "
+                       f"(attempt {attempt + 1}/{MAX_RETRIES})")
+                time.sleep(wait)
+                continue  # Retry
+
+            # Final attempt failed or non-retryable error
+            result['status'] = 'error'
+            result['error'] = f'{error_name}: {error_msg}'
+            break
+
     result['elapsed'] = round(time.time() - start, 2)
     return result
 
@@ -405,6 +468,24 @@ def run_enumeration(region: str, max_workers: int = 20,
         account_id = identity['Account']
     except Exception:
         account_id = 'unknown'
+
+    # Pre-cache credentials to avoid IMDS contention under high parallelism
+    global _cached_credentials
+    try:
+        session = boto3.Session(region_name=region)
+        credentials = session.get_credentials()
+        if credentials:
+            frozen = credentials.get_frozen_credentials()
+            _cached_credentials = {
+                'AccessKeyId': frozen.access_key,
+                'SecretAccessKey': frozen.secret_key,
+                'SessionToken': frozen.token,
+            }
+            tprint(f"  Credentials pre-cached for thread safety")
+    except Exception as e:
+        tprint(f"  WARNING: Could not pre-cache credentials ({e}). "
+               f"Threads will fetch independently.")
+        _cached_credentials = None
     
     results = {
         'metadata': {
