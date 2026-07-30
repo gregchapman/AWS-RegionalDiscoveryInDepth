@@ -11,18 +11,24 @@ output/
 *-output/
 **/iac-templates/
 
+# ── Inventory files (contain full account resource details) ──
+inventory-*.yaml
+inventory-*.json
+inventory-*.csv
+inventory-*.mermaid.md
+summary.txt
+
 # ── Service enumerator results ──
 # These contain account IDs, service lists, and resource counts.
-# Current convention: loose YAML files in the repo root or output/.
-# Future convention: namespaced under output/<account>/<region>/<timestamp>/
 enum-results.yaml
 **/enum-results*.yaml
 
 # ── Customer-specific pipeline configs ──
-# Files like OAG-CS-Fargate.yaml, TG-TWDB-example.yaml, etc.
-# that reference specific accounts or org structures.
+# Files that reference specific accounts or org structures.
 OAG-*.yaml
 TG-*.yaml
+include.yaml
+exclude.yaml
 
 # ── Auto-generated templates (account/region-specific) ──
 # Hand-crafted templates in templates/*.yaml are safe to commit.
@@ -31,6 +37,21 @@ templates/auto/
 templates/*-auto/
 **/_discovery-schemas/
 **/auto-templates/
+
+# ── Credentials and secrets ──
+.env
+.env.*
+*.pem
+*.key
+credentials
+credentials.*
+aws_credentials*
+*.b64
+
+# ── Encoded/compressed customer data ──
+*.zip
+*.tar.gz
+*.tgz
 
 # ── Zone.Identifier files (WSL/Windows artifact) ──
 *.Identifier

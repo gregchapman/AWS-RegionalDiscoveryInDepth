@@ -1,110 +1,153 @@
 # Discovery In-Depth — TODO
 
-## Cross-Region Replication Detection
+## Completed
 
-The template engine currently handles single list/describe operations per service. Detecting cross-region replication requires per-resource follow-up calls, which the engine doesn't support yet.
+### Chained Calls (foreach) — DONE
 
-### Services needing per-resource secondary calls
-- **S3 Buckets** — `get_bucket_replication` per bucket (throws `ReplicationConfigurationNotFoundError` if not configured, needs per-bucket error handling)
-- **DynamoDB** — `describe_table` per table returns `Replicas[]` with region info
+The template engine now supports `foreach` directives for per-resource
+follow-up API calls. This replaces the originally planned `secondary_calls`
+concept with a simpler, more composable approach.
 
-### Services with standalone list operations (easier)
-- **Aurora Global Databases** — `describe_global_clusters` returns cluster members and their regions
-- **ElastiCache Global Datastores** — `describe_global_replication_groups` returns member regions
+Implemented in:
+- `deep_discover.py` — `discover_service()` handles `foreach` operations
+- `templates/elbv2.yaml` — Listeners, Listener Rules, Registered Targets
+- `templates/rds.yaml` — full RDS supporting resources
+- `templates/s3_replication.yaml` — Versioning, Replication, Lifecycle per bucket
+- `templates/backup.yaml` — Backup Selections per Plan
 
-### What's needed
-1. Add a `secondary_calls` concept to the template engine in `deep_discover.py` — after the primary list operation, make per-resource follow-up API calls and merge results into the resource config
-2. Handle per-resource errors gracefully (e.g., S3 buckets without replication)
-3. Surface replication status in draw.io diagrams and audience views
-4. Add replication targets to the Cross-Region Dependencies sections in engineering and operations views
+### DR Readiness Discovery Templates — DONE
 
-### Already done
-- RDS cross-region read replicas — `ReadReplicaSourceDBInstanceIdentifier` and `ReadReplicaDBInstanceIdentifiers` are captured from the existing `describe_db_instances` response (no secondary call needed)
+New templates for comprehensive backup/replication gap analysis:
+- `s3_replication.yaml` — versioning, CRR config, lifecycle per bucket
+- `backup.yaml` — vaults, plans, selections, protected resources
+- `ebs_snapshots.yaml` — snapshots (owner=self), volumes, DLM policies
+- `ami_inventory.yaml` — AMIs (owner=self), instance-to-AMI mapping
+- `fsx.yaml` — file systems (all types), backups, data repository associations
+- `vpn.yaml` — customer gateways, VPN connections, virtual private gateways
+- Enhanced `secretsmanager.yaml` — ReplicationStatus, PrimaryRegion
+- Enhanced `vpc.yaml` — DHCP Option Sets
+- Enhanced `elbv2.yaml` — Listeners, Rules, Targets (chained)
+- Enhanced `rds.yaml` — Clusters, Subnet Groups, Parameter Groups, Option Groups
 
-## Diagram Views — User-Controlled Category Selection
+### IaC Blueprint Expansion — DONE
 
-Currently `CATEGORY_TIERS` in `graph_discover.py` is a hardcoded dict that
-determines which inventory categories appear in the architecture diagram.
-Users can't control what's depicted without editing source code.
+CFN_TYPE_MAP expanded from 24 to 53 entries. Added BESPOKE_HANDLED set
+for categories that have custom generators or are purely diagnostic.
 
-### Problem
-- A full account scan may inventory 50+ categories but only 10-15 are
-  relevant to a specific architecture question
-- Different audiences want different slices: "show me the container
-  platform" vs "show me the data tier" vs "show me everything"
-- New services (EKS, ECR, Step Functions) need to be added to the code
-  to appear in diagrams
+## In Progress
 
-### Proposed Approach: View Files
+### DR Readiness Assessment Module (`dr_assess.py`)
 
-Add a `--view path/to/view.yaml` parameter to `graph_discover.py`.
+A standalone script that reads inventory output and produces a gap report:
 
-A view file is a YAML dict that replaces `CATEGORY_TIERS` for that run:
+- Buckets without CRR (compare S3 Buckets vs S3 Replication)
+- Volumes without snapshot coverage (EBS Volumes vs DLM policies vs Protected Resources)
+- Secrets without replication (Secrets without ReplicationStatus)
+- AMIs/snapshots only in source region (no cross-region copies detected)
+- Boot-order dependency mapping (DHCP → DCs → FSx → workloads)
+- FSx without cross-region backup copies
 
-```yaml
-# views/container-platform.yaml
-name: Container Platform
-description: EKS/ECR workloads and supporting infrastructure
-categories:
-  EKS Clusters:        [workload, containers]
-  ECR Repositories:    [workload, containers]
-  EC2 Instances:       [workload, compute]
-  Load Balancers:      [routing, load_balancing]
-  VPCs:                [boundary, network]
-  Subnets:             [boundary, network]
-  Security Groups:     [attached, security]
-  NAT Gateways:        [routing, network]
+Output: `dr-gaps.md` — actionable gap report with remediation steps
+
+### Remediation IaC Generator
+
+Prescriptive CloudFormation stacks to fix identified gaps:
+- AWS Backup plans with cross-region copy rules
+- S3 CRR configurations for critical buckets
+- DLM policies with cross-region copy for uncovered volumes
+- Scheduled AMI copy automation (Lambda + EventBridge)
+
+## Planned
+
+### Sceptre-Style Deployment Orchestrator
+
+The IaC blueprint already produces the Sceptre-compatible structure:
+one template per resource type, one parameter file per resource instance.
+What's missing is the orchestration layer that deploys them in dependency
+order with blast radius control.
+
+**Why Sceptre's approach works for DR:**
+- Stack groups = blast radius boundaries (deploy security tier, then data, then compute)
+- Python hooks = pre/post-create logic (wait for AD health, register targets, validate connectivity)
+- Dependency DAG = correct ordering without manual sequencing
+- Partial launch = deploy a single stack group without touching others
+- Drift detection = verify deployed state matches inventory
+
+**Options:**
+
+1. **Use Sceptre directly** — Generate `sceptre/` project structure from inventory.
+   Sceptre uses boto3 internally so GovCloud works (set `region: us-gov-west-1`
+   in stack configs). The GovCloud "support" issue in their repo is a CI/testing
+   gap, not a functional one. Validate by running against a GovCloud account.
+   - Pro: Mature tool, Python hooks, community support
+   - Con: External dependency, may have edge cases in GovCloud endpoints
+
+2. **Build a lightweight orchestrator** — A `deploy.py` that reads a simple
+   YAML dependency graph, calls CloudFormation directly via boto3, supports
+   pre/post hooks as Python callables, and handles stack groups.
+   - Pro: Zero dependencies, full control, guaranteed GovCloud support
+   - Con: Maintaining our own orchestrator, reinventing solved problems
+
+3. **Hybrid** — Generate both `DEPLOY.md` (current human-readable approach) AND
+   a `sceptre/` project structure. Operators choose their comfort level.
+
+**Implementation (whichever option):**
+- `iac_blueprint.py` gains a `--orchestrator sceptre|native|both` flag
+- Generates stack group configs with dependency ordering
+- Hook scripts for: AD health wait, target registration, DNS validation
+- Parameter resolution from inventory cross-references (SG ID → new SG ID)
+
+**Blast radius groups (deploy order):**
+```
+01-foundation/     VPCs, Subnets, Route Tables, DHCP Options
+02-security/       Security Groups, KMS Keys, ACM Certs
+03-network/        NAT Gateways, VPC Endpoints, TGW, VPN
+04-identity/       Directories, IAM Roles
+05-data/           RDS, ElastiCache, FSx, DynamoDB (restore from backup)
+06-compute/        EC2, ASGs, ECS, EKS
+07-routing/        Load Balancers, Target Groups, Listeners
+08-serverless/     Lambda, Step Functions, EventBridge
+09-dns/            Route 53, DHCP Option Set updates
+10-monitoring/     CloudWatch Alarms, SNS Topics
 ```
 
-### Behavior
-- If `--view` is specified, load categories from that file
-- If not specified, use the built-in `CATEGORY_TIERS` (current behavior)
-- Ship example views in a `views/` directory:
-  - `full.yaml` — everything in the current `CATEGORY_TIERS`
-  - `compute-only.yaml` — EC2, ASG, LBs, VPCs, subnets
-  - `data-tier.yaml` — RDS, ElastiCache, DynamoDB, S3
-  - `serverless.yaml` — Lambda, Step Functions, API Gateway, EventBridge
-  - `container-platform.yaml` — EKS, ECR, EC2, LBs, VPCs
+### Route 53 Record Set Discovery
 
-### Implementation Steps
-1. Add `--view` argument to `graph_discover.py`
-2. Load YAML file and convert to the `{category: (tier, group)}` dict format
-3. Pass to `InventoryModel` instead of the module-level `CATEGORY_TIERS`
-4. Update `discover.py` orchestrator to pass `--view` through if specified
-5. Create example view files
-6. Document in README
+For accounts that have hosted zones, add chained discovery:
+- `list_resource_record_sets` per hosted zone
+- Captures all A, CNAME, ALIAS records for DNS reconstruction in DR
 
-### Also Needed: Hand-Crafted Templates for Container Services
-- `eks.yaml` — `describe_cluster` (needs secondary calls per cluster name from `list_clusters`)
-- `ecr.yaml` — `describe_repositories`
-- `ecs.yaml` — `list_clusters`, `list_services` per cluster
-- `stepfunctions.yaml` — promote from auto-generated, add `describe_state_machine` secondary call
+### Container Service Templates
 
-## Template Generator — IaC from Inventory
+- `eks.yaml` — clusters, node groups, Fargate profiles
+- `ecr.yaml` — repositories, image tags, lifecycle policies
+- `ecs.yaml` — clusters, services, task definitions (chained)
 
-### Status: DONE (integrated as Step 5)
+### View Files for graph_discover.py
 
-`iac_blueprint.py` now runs automatically as Step 5 of the `discover.py`
-pipeline. The original `template_generator.py` concept has been fully
-implemented and renamed to `iac_blueprint.py`.
+User-controlled category selection for architecture diagrams:
+- `--view path/to/view.yaml` parameter
+- Example views: compute-only, data-tier, serverless, container-platform
+- Documented in README
 
-### Remaining Enhancements
+### Noise Reduction in manual-steps.md
 
-- **Secondary calls** in deep_discover.py (S3 replication config, DynamoDB
-  table details, Lambda code locations, Step Function definitions) would
-  improve the quality of generated templates
-- **CFN Linting** — validate generated templates with cfn-lint before writing
-- **Additional resource types** — EKS, ECR, ECS services, API Gateway
-  need hand-crafted templates before they can produce good IaC output
-- **Mode: import** — Currently only `dr` mode is well-tested. The `import`
-  mode (exact state reproduction) needs validation
+The auto-template generator creates categories for AWS service catalog
+data (Health Event Types, Artifact Reports, pricing) that shouldn't
+appear in manual-steps.md. Options:
 
-### Integration with discover.py
+1. Add a `catalog_noise` set to `iac_blueprint.py` that suppresses these
+2. Filter by source: auto-generated templates produce `auto_generated: true`
+   in the template — skip those categories in IaC output
+3. Only include categories in manual-steps that come from hand-crafted templates
 
-`iac_blueprint.py` IS now part of the main pipeline (Step 5). It runs
-automatically after graph discovery completes. Users can also re-run it
-standalone to regenerate templates after modifying include/exclude filters:
+### CFN Linting
 
-```bash
-python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/
-```
+Validate generated templates with cfn-lint before writing. Catch issues
+like invalid resource property combinations before the user tries to deploy.
+
+### Import Mode Validation
+
+The `--mode import` flag (exact state reproduction vs DR parameterized)
+needs testing against real deployments. Currently only `--mode dr` is
+well-tested.

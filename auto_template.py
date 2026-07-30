@@ -348,6 +348,17 @@ def main():
             services.append(entry['service'])
         print(f"Loaded {len(services)} services from enumerator output")
 
+        # Filter out platform noise services
+        try:
+            from service_enumerator import SKIP_SERVICES
+            before = len(services)
+            services = [s for s in services if s not in SKIP_SERVICES]
+            skipped = before - len(services)
+            if skipped:
+                print(f"  Filtered {skipped} platform/catalog services (SKIP_SERVICES)")
+        except ImportError:
+            pass
+
     elif args.services:
         services = [s.strip() for s in args.services.split(',')]
 

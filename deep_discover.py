@@ -378,10 +378,54 @@ def discover_service(template: dict, region: str) -> Dict[str, List]:
     for op in operations:
         op_name = op.get('name', op.get('method', 'unknown'))
         try:
-            items = discover_operation(client, op, service_name)
-            if items:
-                results[op_name] = items
-                tprint(f"    {op_name}: {len(items)} resources")
+            # Check if this is a chained operation (depends on parent results)
+            foreach = op.get('foreach', None)
+            if foreach:
+                # Chained call: iterate parent results and call API per parent
+                parent_op = foreach.get('parent_operation', '')
+                parent_field = foreach.get('parent_field', '')
+                kwarg_name = foreach.get('kwarg_name', '')
+                parent_results = results.get(parent_op, [])
+
+                if not parent_results:
+                    tprint(f"    {op_name}: skipped (no parent results from '{parent_op}')")
+                    continue
+
+                all_child_items = []
+                for parent_res in parent_results:
+                    parent_val = parent_res.get('config', {}).get(parent_field, '')
+                    if not parent_val:
+                        # Try resource_id as fallback
+                        parent_val = parent_res.get('resource_id', '')
+                    if not parent_val:
+                        continue
+
+                    # Build kwargs for the child call
+                    child_op = dict(op)
+                    child_kwargs = dict(op.get('kwargs', {}))
+                    child_kwargs[kwarg_name] = parent_val
+                    child_op['kwargs'] = child_kwargs
+
+                    child_items = discover_operation(client, child_op, service_name)
+
+                    # Attach parent reference to each child resource
+                    parent_ref_field = foreach.get('attach_parent_field', '')
+                    for child in child_items:
+                        if parent_ref_field:
+                            child['config'][parent_ref_field] = parent_val
+                        else:
+                            child['config']['_parent_arn'] = parent_val
+
+                    all_child_items.extend(child_items)
+
+                if all_child_items:
+                    results[op_name] = all_child_items
+                    tprint(f"    {op_name}: {len(all_child_items)} resources (chained from {len(parent_results)} {parent_op})")
+            else:
+                items = discover_operation(client, op, service_name)
+                if items:
+                    results[op_name] = items
+                    tprint(f"    {op_name}: {len(items)} resources")
         except Exception as e:
             tprint(f"    ⚠ {op_name}: {e}")
 

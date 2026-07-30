@@ -6,6 +6,11 @@ Exhaustively inventories an AWS account/region and produces output for
 diagramming tools, DR planning, compliance audits, cost analysis, and
 audience-specific architecture views.
 
+**Two documents, two audiences:**
+
+- **This README** — How to run the tool, configure templates, understand the pipeline
+- **[RECOVERY-GUIDE.md](RECOVERY-GUIDE.md)** — How to use the output to plan and execute disaster recovery (the "I have results, now what?" document)
+
 Five scripts, one orchestrator:
 
 | Script | Purpose | Speed |
@@ -254,13 +259,23 @@ dependency.
 | TGW Attachment | Solid edge from TGW to VPC | Dashed edge to labeled text node with resource type, ID, account |
 | RDS Replica | Listed in inventory | Flagged in Cross-Region Dependencies sections |
 
-### Cross-Region Replication (Planned)
+### Cross-Region Replication Detection
 
-See `todo.md` for the roadmap on detecting cross-region replication for
-S3 (bucket replication), DynamoDB (global tables), Aurora (global
-databases), and ElastiCache (global datastores). This requires a
-`secondary_calls` concept in the template engine for per-resource
-follow-up API calls.
+The template engine supports chained calls via `foreach` for per-resource
+follow-up API calls. This enables detection of:
+
+- **S3 CRR** — `s3_replication.yaml` calls `get_bucket_replication` per
+  bucket. Buckets without entries have no CRR configured.
+- **S3 Versioning** — `get_bucket_versioning` per bucket (required for CRR)
+- **Secrets Manager replication** — `ReplicationStatus` and `PrimaryRegion`
+  fields captured in `secretsmanager.yaml`
+- **RDS cross-region read replicas** — captured from `describe_db_instances`
+  response fields
+
+Still planned:
+- DynamoDB global tables (`describe_table` → `Replicas[]`)
+- Aurora global databases (`describe_global_clusters`)
+- ElastiCache global datastores (`describe_global_replication_groups`)
 
 ## Templates
 
@@ -270,10 +285,11 @@ High-quality templates with curated field lists, DR notes, and skip
 filters. 22 templates included covering core AWS services:
 
 
-`acm`, `cloudwatch`, `ec2`, `elasticache`, `elb_classic`, `elbv2`,
-`events`, `kms`, `lambda`, `nat_gateways`, `rds`, `route53`, `s3`,
-`secretsmanager`, `security_groups`, `sns`, `ssm`, `tgw`, `vpc`,
-`vpc_endpoints`, `vpc_peering`, `wafv2`
+`acm`, `ami_inventory`, `autoscaling`, `backup`, `cloudwatch`,
+`ebs_snapshots`, `ec2`, `elasticache`, `elb_classic`, `elbv2`, `events`,
+`fsx`, `kms`, `lambda`, `nat_gateways`, `rds`, `route53`, `s3`,
+`s3_replication`, `secretsmanager`, `security_groups`, `sns`, `ssm`,
+`tgw`, `vpc`, `vpc_endpoints`, `vpc_peering`, `vpn`, `wafv2`
 
 ### Auto-Generated (`_discovery-schemas/` in run directory)
 
@@ -332,6 +348,40 @@ operations:
 | `operations[].config_fields` | No | List of field paths to include in config |
 | `operations[].kwargs` | No | Extra kwargs to pass to the API call |
 | `operations[].skip_if` | No | Filter: skip resources matching field values |
+| `operations[].foreach` | No | Chained call config — iterate parent results (see below) |
+
+### Chained Calls (foreach)
+
+Some APIs require a parent resource ID as input (e.g., describe_listeners
+needs a LoadBalancerArn). The `foreach` directive iterates results from a
+parent operation and calls the child API once per parent resource:
+
+```yaml
+  - name: Listeners
+    method: describe_listeners
+    result_key: Listeners
+    id_field: ListenerArn
+    foreach:
+      parent_operation: Load Balancers    # must match a 'name' earlier in this template
+      parent_field: LoadBalancerArn       # field from parent's config dict
+      kwarg_name: LoadBalancerArn         # kwarg passed to the child API call
+      attach_parent_field: LoadBalancerArn  # stored on each child for back-reference
+    config_fields:
+      - ListenerArn
+      - Port
+      - Protocol
+```
+
+| foreach field | Required | Description |
+|---------------|----------|-------------|
+| `parent_operation` | Yes | Name of the operation whose results to iterate |
+| `parent_field` | Yes | Config field from parent to use as the call argument |
+| `kwarg_name` | Yes | The boto3 keyword argument name for the child API |
+| `attach_parent_field` | No | Field name to store the parent value on each child (default: `_parent_arn`) |
+
+The engine handles per-call errors gracefully — if one parent's child call
+fails (e.g., `get_bucket_replication` on a bucket without CRR), it logs a
+warning and continues with the next parent.
 
 ### Field Path Syntax
 
@@ -457,10 +507,14 @@ Filtering is based on resource tag key:value pairs defined in include.yaml and e
 
 **Precedence:** include overrides exclude. Both empty = include everything.
 
-### Resource Types Covered (24)
+### Resource Types Covered (53)
 
 | Category | CFN Type |
 |----------|----------|
+| VPCs | AWS::EC2::VPC |
+| Subnets | AWS::EC2::Subnet |
+| Route Tables | AWS::EC2::RouteTable |
+| DHCP Options | AWS::EC2::DHCPOptions |
 | EC2 Instances | AWS::EC2::Instance |
 | Auto Scaling Groups | AWS::AutoScaling::AutoScalingGroup |
 | ECS Clusters | AWS::ECS::Cluster |
@@ -471,21 +525,44 @@ Filtering is based on resource tag key:value pairs defined in include.yaml and e
 | EventBridge Rules | AWS::Events::Rule |
 | API Gateways | AWS::ApiGatewayV2::Api |
 | RDS Instances | AWS::RDS::DBInstance |
+| RDS DB Clusters | AWS::RDS::DBCluster |
+| RDS DB Subnet Groups | AWS::RDS::DBSubnetGroup |
+| RDS Parameter Groups | AWS::RDS::DBParameterGroup |
+| RDS Cluster Parameter Groups | AWS::RDS::DBClusterParameterGroup |
+| RDS Option Groups | AWS::RDS::OptionGroup |
 | ElastiCache Clusters | AWS::ElastiCache::CacheCluster |
+| ElastiCache Replication Groups | AWS::ElastiCache::ReplicationGroup |
 | DynamoDB Tables | AWS::DynamoDB::Table |
+| FSx File Systems | AWS::FSx::FileSystem |
 | S3 Buckets | AWS::S3::Bucket |
 | Classic Load Balancers | AWS::ElasticLoadBalancing::LoadBalancer |
 | Load Balancers (ALB/NLB) | AWS::ElasticLoadBalancingV2::LoadBalancer |
 | Target Groups | AWS::ElasticLoadBalancingV2::TargetGroup |
+| Listeners | AWS::ElasticLoadBalancingV2::Listener |
 | NAT Gateways | AWS::EC2::NatGateway |
 | VPC Endpoints | AWS::EC2::VPCEndpoint |
+| VPC Peering Connections | AWS::EC2::VPCPeeringConnection |
+| Transit Gateways | AWS::EC2::TransitGateway |
+| Transit Gateway Attachments | AWS::EC2::TransitGatewayAttachment |
+| Customer Gateways | AWS::EC2::CustomerGateway |
+| VPN Connections | AWS::EC2::VPNConnection |
+| Virtual Private Gateways | AWS::EC2::VPNGateway |
 | Hosted Zones | AWS::Route53::HostedZone |
+| Directories | AWS::DirectoryService::MicrosoftAD |
 | SNS Topics | AWS::SNS::Topic |
 | SQS Queues | AWS::SQS::Queue |
 | KMS Keys | AWS::KMS::Key |
 | ACM Certificates | AWS::CertificateManager::Certificate |
 | WAF Web ACLs | AWS::WAFv2::WebACL |
 | CloudWatch Alarms | AWS::CloudWatch::Alarm |
+| Backup Vaults | AWS::Backup::BackupVault |
+| Backup Plans | AWS::Backup::BackupPlan |
+| Backup Selections | AWS::Backup::BackupSelection |
+| EBS Snapshots | AWS::EC2::Snapshot |
+| AMIs | AWS::EC2::Image |
+| DLM Lifecycle Policies | AWS::DLM::LifecyclePolicy |
+| IAM Roles | AWS::IAM::Role |
+| CloudTrail Trails | AWS::CloudTrail::Trail |
 | Security Groups | (bespoke — cross-reference resolution) |
 
 Resources not in this list go to `manual-steps.md` with their ARN and

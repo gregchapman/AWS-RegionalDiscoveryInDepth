@@ -1,0 +1,94 @@
+service: fsx
+client: fsx
+display_name: FSx File Systems
+
+operations:
+  - name: FSx File Systems
+    method: describe_file_systems
+    paginator: true
+    result_key: FileSystems
+    id_field: FileSystemId
+    tag_name: true
+    key_prefix: fsx
+    dr_note: >
+      FSx has no native cross-region replication. Recovery requires a cross-region
+      backup copy (via AWS Backup) then restore-from-backup in the DR region.
+      FSx for Windows is AD-joined — Domain Controllers must be running in DR
+      BEFORE the file system can be created. Boot order: VPC → SGs → DCs → FSx.
+      Storage capacity, throughput, and deployment type must match production.
+    config_fields:
+      - FileSystemId
+      - FileSystemType
+      - Lifecycle
+      - StorageCapacity
+      - StorageType
+      - SubnetIds
+      - VpcId
+      - KmsKeyId
+      - DNSName
+      - CreationTime
+      # Windows-specific (null for other types)
+      - WindowsConfiguration.ActiveDirectoryId
+      - WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DomainName
+      - WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.DnsIps
+      - WindowsConfiguration.SelfManagedActiveDirectoryConfiguration.UserName
+      - WindowsConfiguration.ThroughputCapacity
+      - WindowsConfiguration.PreferredSubnetId
+      - WindowsConfiguration.DeploymentType
+      - WindowsConfiguration.AutomaticBackupRetentionDays
+      - WindowsConfiguration.DailyAutomaticBackupStartTime
+      - WindowsConfiguration.WeeklyMaintenanceStartTime
+      - WindowsConfiguration.CopyTagsToBackups
+      - WindowsConfiguration.AuditLogConfiguration
+      # Lustre-specific (null for other types)
+      - LustreConfiguration.DeploymentType
+      - LustreConfiguration.DataRepositoryConfiguration
+      - LustreConfiguration.WeeklyMaintenanceStartTime
+      # ONTAP-specific (null for other types)
+      - OntapConfiguration.DeploymentType
+      - OntapConfiguration.EndpointIpAddressRange
+      - OntapConfiguration.ThroughputCapacity
+
+  - name: FSx Backups
+    method: describe_backups
+    paginator: true
+    result_key: Backups
+    id_field: BackupId
+    tag_name: true
+    key_prefix: fsxbk
+    dr_note: >
+      FSx backups are regional. For DR, backups must be copied to the target region
+      using AWS Backup with a cross-region copy rule, or manually via
+      copy-backup --source-region. Without a cross-region copy, data is lost
+      if the source region is unavailable.
+    config_fields:
+      - BackupId
+      - Lifecycle
+      - Type
+      - CreationTime
+      - FileSystem.FileSystemId
+      - FileSystem.FileSystemType
+      - FileSystem.StorageCapacity
+      - FileSystem.StorageType
+
+  # ── Chained: Data deduplication on Windows file systems ──
+  # Note: describe_data_repository_associations covers Lustre S3 links
+  - name: FSx Data Repository Associations
+    method: describe_data_repository_associations
+    paginator: true
+    result_key: Associations
+    id_field: AssociationId
+    key_prefix: fsxdra
+    dr_note: >
+      Data repository associations link FSx Lustre to S3 buckets.
+      In DR, the S3 bucket must exist in the DR region (or be CRR-replicated)
+      and the association must be recreated pointing to the DR bucket.
+    config_fields:
+      - AssociationId
+      - FileSystemId
+      - FileSystemPath
+      - DataRepositoryPath
+      - Lifecycle
+      - ImportedFileChunkSize
+      - S3.AutoImportPolicy
+      - S3.AutoExportPolicy

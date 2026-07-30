@@ -208,6 +208,19 @@ CFN_TYPE_MAP = {
                       'description': 'VPC for this route table'},
         },
     },
+    'DHCP Options': {
+        'cfn_type': 'AWS::EC2::DHCPOptions',
+        'id_field': 'DhcpOptionsId',
+        'properties': {
+            'DomainName': 'domain-name',
+            'DomainNameServers': 'domain-name-servers',
+            'NtpServers': 'ntp-servers',
+            'NetbiosNameServers': 'netbios-name-servers',
+            'NetbiosNodeType': 'netbios-node-type',
+        },
+        'params': {},
+        'note': 'DNS server IPs must be updated to DR DC addresses. Boot-order dependency.',
+    },
     # ── Compute ──
     'EC2 Instances': {
         'cfn_type': 'AWS::EC2::Instance',
@@ -374,6 +387,49 @@ CFN_TYPE_MAP = {
                                     'description': 'Security group IDs'},
         },
     },
+    'ElastiCache Replication Groups': {
+        'cfn_type': 'AWS::ElastiCache::ReplicationGroup',
+        'id_field': 'ReplicationGroupId',
+        'properties': {
+            'ReplicationGroupDescription': 'Description',
+            'AutomaticFailoverEnabled': 'AutomaticFailover',
+            'MultiAZEnabled': 'MultiAZ',
+            'CacheNodeType': 'CacheNodeType',
+            'Engine': 'Engine',
+            'EngineVersion': 'EngineVersion',
+            'NumCacheClusters': 'MemberClusters',
+            'AtRestEncryptionEnabled': 'AtRestEncryptionEnabled',
+            'TransitEncryptionEnabled': 'TransitEncryptionEnabled',
+        },
+        'params': {
+            'CacheSubnetGroupName': {'type': 'String', 'source': None,
+                                      'description': 'Cache subnet group name in DR'},
+            'SecurityGroupIds': {'type': 'CommaDelimitedList', 'source': None,
+                                  'description': 'Security group IDs'},
+        },
+    },
+    'FSx File Systems': {
+        'cfn_type': 'AWS::FSx::FileSystem',
+        'id_field': 'FileSystemId',
+        'properties': {
+            'FileSystemType': 'FileSystemType',
+            'StorageCapacity': 'StorageCapacity',
+            'StorageType': 'StorageType',
+        },
+        'params': {
+            'SubnetIds': {'type': 'CommaDelimitedList', 'source': 'SubnetIds',
+                          'description': 'Subnet IDs in DR region'},
+            'SecurityGroupIds': {'type': 'CommaDelimitedList', 'source': None,
+                                  'description': 'Security group IDs in DR'},
+            'KmsKeyId': {'type': 'String', 'source': 'KmsKeyId',
+                          'description': 'KMS key ARN for encryption in DR'},
+            'BackupId': {'type': 'String', 'source': None,
+                          'description': 'FSx backup ID to restore from (cross-region copy)'},
+            'ActiveDirectoryId': {'type': 'String', 'source': 'ActiveDirectoryId',
+                                   'description': 'AWS Managed AD directory ID in DR (Windows type)'},
+        },
+        'note': 'Restore from cross-region backup copy. DCs must be running first (AD join). Match throughput and storage capacity.',
+    },
     'DynamoDB Tables': {
         'cfn_type': 'AWS::DynamoDB::Table',
         'id_field': 'TableName',
@@ -450,6 +506,24 @@ CFN_TYPE_MAP = {
         'params': {
             'VpcId': {'type': 'AWS::EC2::VPC::Id', 'source': 'VpcId',
                       'description': 'VPC ID'},
+        },
+    },
+    'VPC Peering Connections': {
+        'cfn_type': 'AWS::EC2::VPCPeeringConnection',
+        'id_field': 'VpcPeeringConnectionId',
+        'properties': {
+            'RequesterVpcInfo_VpcId': 'RequesterVpcInfo.VpcId',
+            'AccepterVpcInfo_VpcId': 'AccepterVpcInfo.VpcId',
+        },
+        'params': {
+            'VpcId': {'type': 'AWS::EC2::VPC::Id', 'source': 'RequesterVpcInfo_VpcId',
+                      'description': 'Requester VPC ID'},
+            'PeerVpcId': {'type': 'AWS::EC2::VPC::Id', 'source': 'AccepterVpcInfo_VpcId',
+                          'description': 'Peer VPC ID'},
+            'PeerOwnerId': {'type': 'String', 'source': 'AccepterVpcInfo_OwnerId',
+                             'description': 'Peer account ID'},
+            'PeerRegion': {'type': 'String', 'source': 'AccepterVpcInfo_Region',
+                            'description': 'Peer VPC region'},
         },
     },
     'Hosted Zones': {
@@ -565,12 +639,305 @@ CFN_TYPE_MAP = {
         },
         'params': {},
     },
+    # ── Data (Aurora Clusters) ──
+    'RDS DB Clusters': {
+        'cfn_type': 'AWS::RDS::DBCluster',
+        'id_field': 'DBClusterIdentifier',
+        'properties': {
+            'DBClusterIdentifier': 'DBClusterIdentifier',
+            'Engine': 'Engine',
+            'EngineVersion': 'EngineVersion',
+            'DatabaseName': 'DatabaseName',
+            'Port': 'Port',
+            'MasterUsername': 'MasterUsername',
+            'BackupRetentionPeriod': 'BackupRetentionPeriod',
+            'PreferredBackupWindow': 'PreferredBackupWindow',
+            'PreferredMaintenanceWindow': 'PreferredMaintenanceWindow',
+            'StorageEncrypted': 'StorageEncrypted',
+            'DeletionProtection': 'DeletionProtection',
+            'CopyTagsToSnapshot': 'CopyTagsToSnapshot',
+            'EnableCloudwatchLogsExports': 'EnabledCloudwatchLogsExports',
+        },
+        'params': {
+            'SnapshotIdentifier': {'type': 'String', 'source': None,
+                                    'description': 'Cluster snapshot ARN to restore from'},
+            'DBSubnetGroupName': {'type': 'String', 'source': 'DBSubnetGroup',
+                                   'description': 'DB subnet group name in DR region'},
+            'VpcSecurityGroupIds': {'type': 'CommaDelimitedList', 'source': None,
+                                    'description': 'Security group IDs'},
+            'KmsKeyId': {'type': 'String', 'source': 'KmsKeyId',
+                         'description': 'KMS key ARN for encryption in DR region'},
+            'DBClusterParameterGroupName': {'type': 'String', 'source': 'DBClusterParameterGroup',
+                                             'description': 'Cluster parameter group name'},
+        },
+    },
+    'RDS DB Subnet Groups': {
+        'cfn_type': 'AWS::RDS::DBSubnetGroup',
+        'id_field': 'DBSubnetGroupName',
+        'properties': {
+            'DBSubnetGroupName': 'DBSubnetGroupName',
+            'DBSubnetGroupDescription': 'DBSubnetGroupDescription',
+        },
+        'params': {
+            'SubnetIds': {'type': 'CommaDelimitedList', 'source': None,
+                          'description': 'Subnet IDs in DR region'},
+        },
+    },
+    'RDS Parameter Groups': {
+        'cfn_type': 'AWS::RDS::DBParameterGroup',
+        'id_field': 'DBParameterGroupName',
+        'properties': {
+            'DBParameterGroupName': 'DBParameterGroupName',
+            'Family': 'DBParameterGroupFamily',
+            'Description': 'Description',
+        },
+        'params': {},
+    },
+    'RDS Cluster Parameter Groups': {
+        'cfn_type': 'AWS::RDS::DBClusterParameterGroup',
+        'id_field': 'DBClusterParameterGroupName',
+        'properties': {
+            'DBClusterParameterGroupName': 'DBClusterParameterGroupName',
+            'Family': 'DBParameterGroupFamily',
+            'Description': 'Description',
+        },
+        'params': {},
+    },
+    'RDS Option Groups': {
+        'cfn_type': 'AWS::RDS::OptionGroup',
+        'id_field': 'OptionGroupName',
+        'properties': {
+            'OptionGroupName': 'OptionGroupName',
+            'OptionGroupDescription': 'OptionGroupDescription',
+            'EngineName': 'EngineName',
+            'MajorEngineVersion': 'MajorEngineVersion',
+        },
+        'params': {},
+    },
+    # ── Networking (Transit Gateway & VPN) ──
+    'Transit Gateways': {
+        'cfn_type': 'AWS::EC2::TransitGateway',
+        'id_field': 'TransitGatewayId',
+        'properties': {
+            'AmazonSideAsn': 'AmazonSideAsn',
+            'DefaultRouteTableAssociation': 'DefaultRouteTableAssociation',
+            'DefaultRouteTablePropagation': 'DefaultRouteTablePropagation',
+            'DnsSupport': 'DnsSupport',
+        },
+        'params': {},
+    },
+    'Transit Gateway Attachments': {
+        'cfn_type': 'AWS::EC2::TransitGatewayAttachment',
+        'id_field': 'TransitGatewayAttachmentId',
+        'properties': {
+            'TransitGatewayId': 'TransitGatewayId',
+            'ResourceType': 'ResourceType',
+        },
+        'params': {
+            'VpcId': {'type': 'AWS::EC2::VPC::Id', 'source': 'ResourceId',
+                      'description': 'VPC ID to attach (when ResourceType=vpc)'},
+            'SubnetIds': {'type': 'CommaDelimitedList', 'source': None,
+                          'description': 'Subnet IDs for the attachment'},
+        },
+    },
+    'Customer Gateways': {
+        'cfn_type': 'AWS::EC2::CustomerGateway',
+        'id_field': 'CustomerGatewayId',
+        'properties': {
+            'Type': 'Type',
+            'BgpAsn': 'BgpAsn',
+            'IpAddress': 'IpAddress',
+            'DeviceName': 'DeviceName',
+        },
+        'params': {},
+    },
+    'VPN Connections': {
+        'cfn_type': 'AWS::EC2::VPNConnection',
+        'id_field': 'VpnConnectionId',
+        'properties': {
+            'Type': 'Type',
+            'StaticRoutesOnly': 'StaticRoutesOnly',
+        },
+        'params': {
+            'CustomerGatewayId': {'type': 'String', 'source': 'CustomerGatewayId',
+                                   'description': 'Customer gateway ID in DR'},
+            'TransitGatewayId': {'type': 'String', 'source': 'TransitGatewayId',
+                                  'description': 'Transit gateway ID in DR'},
+            'VpnGatewayId': {'type': 'String', 'source': 'VpnGatewayId',
+                              'description': 'VPN gateway ID in DR (if not using TGW)'},
+        },
+    },
+    'Virtual Private Gateways': {
+        'cfn_type': 'AWS::EC2::VPNGateway',
+        'id_field': 'VpnGatewayId',
+        'properties': {
+            'Type': 'Type',
+            'AmazonSideAsn': 'AmazonSideAsn',
+        },
+        'params': {},
+    },
+    # ── Listeners (ELBv2) ──
+    'Listeners': {
+        'cfn_type': 'AWS::ElasticLoadBalancingV2::Listener',
+        'id_field': 'ListenerArn',
+        'properties': {
+            'Port': 'Port',
+            'Protocol': 'Protocol',
+            'SslPolicy': 'SslPolicy',
+            'AlpnPolicy': 'AlpnPolicy',
+        },
+        'params': {
+            'LoadBalancerArn': {'type': 'String', 'source': 'LoadBalancerArn',
+                                'description': 'Load balancer ARN in DR'},
+            'DefaultTargetGroupArn': {'type': 'String', 'source': None,
+                                       'description': 'Default target group ARN in DR'},
+            'CertificateArn': {'type': 'String', 'source': None,
+                                'description': 'ACM certificate ARN in DR region'},
+        },
+    },
+    # ── IAM ──
+    'List Roles': {
+        'cfn_type': 'AWS::IAM::Role',
+        'id_field': 'RoleName',
+        'properties': {
+            'RoleName': 'RoleName',
+            'Description': 'Description',
+            'MaxSessionDuration': 'MaxSessionDuration',
+            'Path': 'Path',
+        },
+        'params': {},
+    },
+    # ── Backup & Lifecycle ──
+    'Get Lifecycle Policies': {
+        'cfn_type': 'AWS::DLM::LifecyclePolicy',
+        'id_field': 'PolicyId',
+        'properties': {
+            'Description': 'Description',
+            'State': 'State',
+        },
+        'params': {},
+    },
+    # ── Audit & Compliance ──
+    'List Trails': {
+        'cfn_type': 'AWS::CloudTrail::Trail',
+        'id_field': 'Name',
+        'properties': {
+            'TrailName': 'Name',
+            'IsMultiRegionTrail': 'IsMultiRegionTrail',
+        },
+        'params': {
+            'S3BucketName': {'type': 'String', 'source': None,
+                              'description': 'S3 bucket for trail logs in DR'},
+        },
+    },
+    # ── DR Readiness (Backup & Replication) ──
+    'Backup Vaults': {
+        'cfn_type': 'AWS::Backup::BackupVault',
+        'id_field': 'BackupVaultName',
+        'properties': {
+            'BackupVaultName': 'BackupVaultName',
+        },
+        'params': {
+            'EncryptionKeyArn': {'type': 'String', 'source': 'EncryptionKeyArn',
+                                  'description': 'KMS key ARN for vault encryption in DR'},
+        },
+    },
+    'Backup Plans': {
+        'cfn_type': 'AWS::Backup::BackupPlan',
+        'id_field': 'BackupPlanId',
+        'properties': {
+            'BackupPlanName': 'BackupPlanName',
+        },
+        'params': {},
+        'note': 'Plan rules (schedule, lifecycle, copy actions) require bespoke generation from plan detail.',
+    },
+    'Backup Selections': {
+        'cfn_type': 'AWS::Backup::BackupSelection',
+        'id_field': 'SelectionId',
+        'properties': {
+            'SelectionName': 'SelectionName',
+        },
+        'params': {
+            'BackupPlanId': {'type': 'String', 'source': 'BackupPlanId',
+                              'description': 'Backup plan ID in DR'},
+            'IamRoleArn': {'type': 'String', 'source': 'IamRoleArn',
+                            'description': 'IAM role ARN for backup service'},
+        },
+    },
+    'S3 Replication': {
+        'cfn_type': 'AWS::S3::Bucket',
+        'id_field': 'BucketName',
+        'properties': {
+            'ReplicationConfiguration': 'Rules',
+        },
+        'params': {},
+        'note': 'CRR config lives on the source bucket. Captured for DR gap analysis.',
+    },
+    'EBS Snapshots': {
+        'cfn_type': 'AWS::EC2::Snapshot',
+        'id_field': 'SnapshotId',
+        'properties': {
+            'VolumeId': 'VolumeId',
+            'VolumeSize': 'VolumeSize',
+            'Encrypted': 'Encrypted',
+            'Description': 'Description',
+        },
+        'params': {
+            'KmsKeyId': {'type': 'String', 'source': 'KmsKeyId',
+                          'description': 'KMS key for snapshot encryption in DR'},
+        },
+        'note': 'Snapshots must be copied cross-region for DR. DLM or AWS Backup automates this.',
+    },
+    'AMIs': {
+        'cfn_type': 'AWS::EC2::Image',
+        'id_field': 'ImageId',
+        'properties': {
+            'Name': 'Name',
+            'Architecture': 'Architecture',
+            'RootDeviceType': 'RootDeviceType',
+            'VirtualizationType': 'VirtualizationType',
+        },
+        'params': {},
+        'note': 'AMIs must be copied to DR region. Instance launches depend on AMI availability.',
+    },
+    'DLM Lifecycle Policies': {
+        'cfn_type': 'AWS::DLM::LifecyclePolicy',
+        'id_field': 'PolicyId',
+        'properties': {
+            'Description': 'Description',
+            'State': 'State',
+            'PolicyType': 'PolicyType',
+        },
+        'params': {},
+        'note': 'Verify cross-region copy rules exist and cover all critical volumes.',
+    },
 }
 
 # Resources that go to manual-steps.md (secrets, or no CFN path)
 NO_CFN_SUPPORT = {
     'SSM Parameters',   # Often contain secrets — manual review needed
     'Secrets',          # Secrets Manager — values can't be exported
+}
+
+# Resources handled by bespoke generators — skip in generic/manual-steps routing
+BESPOKE_HANDLED = {
+    'Security Groups',       # generate_sg_template()
+    'EC2 Instances',         # generate_compute_template()
+    'RDS Instances',         # generate_data_template()
+    'RDS DB Clusters',       # generate_data_template()
+    'ElastiCache Clusters',  # generate_data_template()
+    'Load Balancers',        # generate_network_template()
+    'Target Groups',         # generate_network_template()
+    'Listeners',             # generate_network_template()
+    'Listener Rules',        # generate_network_template() — informational, actions reference TGs
+    'Registered Targets',    # generate_network_template() — informational, target registration
+    # DR assessment informational categories — gap analysis input, not IaC output
+    'Protected Resources',   # AWS Backup coverage list — compare against full inventory
+    'S3 Versioning',         # Per-bucket versioning status — diagnostic
+    'S3 Lifecycle',          # Per-bucket lifecycle rules — diagnostic
+    'EBS Volumes',           # Volume-to-instance mappings — used by snapshot assessment
+    'FSx Backups',           # FSx backup inventory — input for restore-from-backup
+    'FSx Data Repository Associations',  # Lustre-to-S3 links — diagnostic
 }
 
 
@@ -2054,6 +2421,10 @@ Filter files (optional, placed in the input directory):
                     'category': category,
                     'reason': f'{category} — values contain secrets or require manual configuration',
                 })
+            continue
+
+        # Skip categories handled by bespoke generators (SGs, compute, data, network)
+        if category in BESPOKE_HANDLED:
             continue
 
         # Check if we have a CFN type mapping

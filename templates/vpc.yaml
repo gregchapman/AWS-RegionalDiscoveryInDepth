@@ -46,3 +46,16 @@ operations:
       - VpcId
       - Routes
       - Associations
+
+  - name: DHCP Options
+    method: describe_dhcp_options
+    paginator: true
+    result_key: DhcpOptions
+    id_field: DhcpOptionsId
+    tag_name: true
+    key_prefix: dhcp
+    dr_note: "DNS server IPs in DHCP options reference EC2 DCs. Must update to DR DC IPs. Boot-order dependency: DCs must be running before other instances can resolve."
+    config_fields:
+      - DhcpOptionsId
+      - DhcpConfigurations
+      - OwnerId

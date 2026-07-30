@@ -1,0 +1,47 @@
+service: ami_inventory
+client: ec2
+display_name: AMI Inventory
+
+operations:
+  - name: AMIs
+    method: describe_images
+    paginator: false
+    result_key: Images
+    id_field: ImageId
+    name_field: Name
+    key_prefix: ami
+    dr_note: "AMIs are regional. Must copy to DR region. Instance launches depend on AMI availability."
+    kwargs:
+      Owners:
+        - self
+    config_fields:
+      - ImageId
+      - Name
+      - Description
+      - State
+      - Architecture
+      - Platform
+      - RootDeviceType
+      - RootDeviceName
+      - BlockDeviceMappings
+      - CreationDate
+      - Public
+      - EnaSupport
+      - SriovNetSupport
+      - VirtualizationType
+
+  - name: EC2 Instances
+    method: describe_instances
+    paginator: true
+    result_key: Reservations
+    unwrap_key: Instances
+    id_field: InstanceId
+    tag_name: true
+    key_prefix: inst
+    dr_note: "Instance-to-AMI mapping for DR rebuild. Must have AMI available in DR region."
+    config_fields:
+      - InstanceId
+      - ImageId
+      - InstanceType
+      - State.Name
+      - Platform

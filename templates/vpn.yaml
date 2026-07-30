@@ -1,0 +1,60 @@
+service: vpn
+client: ec2
+display_name: VPN Connections & Customer Gateways
+
+operations:
+  - name: Customer Gateways
+    method: describe_customer_gateways
+    result_key: CustomerGateways
+    id_field: CustomerGatewayId
+    tag_name: true
+    key_prefix: cgw
+    dr_note: "Customer gateway represents the on-prem side. IP and BGP ASN must match existing device."
+    config_fields:
+      - CustomerGatewayId
+      - State
+      - Type
+      - IpAddress
+      - BgpAsn
+      - BgpAsnExtended
+      - CertificateArn
+      - DeviceName
+
+  - name: VPN Connections
+    method: describe_vpn_connections
+    result_key: VpnConnections
+    id_field: VpnConnectionId
+    tag_name: true
+    key_prefix: vpn
+    dr_note: "VPN tunnels are region-specific. Recreate with same PSK and tunnel options for seamless failover."
+    config_fields:
+      - VpnConnectionId
+      - State
+      - Type
+      - CustomerGatewayId
+      - VpnGatewayId
+      - TransitGatewayId
+      - Category
+      - Options.StaticRoutesOnly
+      - Options.EnableAcceleration
+      - Options.LocalIpv4NetworkCidr
+      - Options.RemoteIpv4NetworkCidr
+      - Options.TunnelInsideIpVersion
+      - Options.TunnelOptions
+      - Routes
+      - VgwTelemetry
+
+  - name: Virtual Private Gateways
+    method: describe_vpn_gateways
+    result_key: VpnGateways
+    id_field: VpnGatewayId
+    tag_name: true
+    key_prefix: vgw
+    dr_note: "VGW is regional. Recreate and attach to DR VPC."
+    config_fields:
+      - VpnGatewayId
+      - State
+      - Type
+      - AmazonSideAsn
+      - AvailabilityZone
+      - VpcAttachments

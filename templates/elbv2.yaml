@@ -20,6 +20,7 @@ operations:
       - AvailabilityZones
       - SecurityGroups
       - State.Code
+      - IpAddressType
 
   - name: Target Groups
     method: describe_target_groups
@@ -40,5 +41,70 @@ operations:
       - HealthCheckPort
       - HealthCheckPath
       - HealthCheckIntervalSeconds
+      - HealthCheckEnabled
       - HealthyThresholdCount
       - UnhealthyThresholdCount
+      - Matcher.HttpCode
+      - LoadBalancerArns
+
+  # ── Chained: Listeners per Load Balancer ──
+  - name: Listeners
+    method: describe_listeners
+    paginator: true
+    result_key: Listeners
+    id_field: ListenerArn
+    key_prefix: listener
+    dr_note: "Listener certs are region-specific ACM ARNs. Must re-issue or import in DR."
+    foreach:
+      parent_operation: Load Balancers
+      parent_field: LoadBalancerArn
+      kwarg_name: LoadBalancerArn
+      attach_parent_field: LoadBalancerArn
+    config_fields:
+      - ListenerArn
+      - LoadBalancerArn
+      - Port
+      - Protocol
+      - SslPolicy
+      - Certificates
+      - DefaultActions
+      - AlpnPolicy
+
+  # ── Chained: Rules per Listener ──
+  - name: Listener Rules
+    method: describe_rules
+    paginator: true
+    result_key: Rules
+    id_field: RuleArn
+    key_prefix: rule
+    dr_note: "Rule target group ARNs will change in DR. Remap to new TG ARNs."
+    foreach:
+      parent_operation: Listeners
+      parent_field: ListenerArn
+      kwarg_name: ListenerArn
+      attach_parent_field: ListenerArn
+    config_fields:
+      - RuleArn
+      - Priority
+      - Conditions
+      - Actions
+      - IsDefault
+
+  # ── Chained: Registered Targets per Target Group ──
+  - name: Registered Targets
+    method: describe_target_health
+    result_key: TargetHealthDescriptions
+    id_field: Target.Id
+    key_prefix: target
+    dr_note: "Target IDs (instance/IP) will differ in DR. Register new targets post-deploy."
+    foreach:
+      parent_operation: Target Groups
+      parent_field: TargetGroupArn
+      kwarg_name: TargetGroupArn
+      attach_parent_field: TargetGroupArn
+    config_fields:
+      - Target.Id
+      - Target.Port
+      - Target.AvailabilityZone
+      - TargetHealth.State
+      - TargetHealth.Reason

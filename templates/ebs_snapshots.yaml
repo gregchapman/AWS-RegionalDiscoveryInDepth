@@ -1,0 +1,60 @@
+service: ebs_snapshots
+client: ec2
+display_name: EBS Snapshots
+
+operations:
+  - name: EBS Snapshots
+    method: describe_snapshots
+    paginator: true
+    result_key: Snapshots
+    id_field: SnapshotId
+    tag_name: true
+    key_prefix: snap
+    dr_note: "Snapshots are regional. Must copy to DR region or use DLM cross-region copy rules."
+    kwargs:
+      OwnerIds:
+        - self
+    config_fields:
+      - SnapshotId
+      - VolumeId
+      - VolumeSize
+      - State
+      - StartTime
+      - Description
+      - Encrypted
+      - KmsKeyId
+      - Progress
+
+  - name: EBS Volumes
+    method: describe_volumes
+    paginator: true
+    result_key: Volumes
+    id_field: VolumeId
+    tag_name: true
+    key_prefix: vol
+    dr_note: "Volume-to-instance mapping needed for DR restore. Recreate from snapshots in DR."
+    config_fields:
+      - VolumeId
+      - Size
+      - VolumeType
+      - Iops
+      - Throughput
+      - Encrypted
+      - KmsKeyId
+      - AvailabilityZone
+      - State
+      - Attachments
+
+  - name: DLM Lifecycle Policies
+    method: get_lifecycle_policies
+    paginator: false
+    result_key: Policies
+    id_field: PolicyId
+    key_prefix: dlm
+    dr_note: "DLM policies automate snapshot creation and cross-region copy. Verify coverage of all critical volumes."
+    config_fields:
+      - PolicyId
+      - Description
+      - State
+      - PolicyType
+      - Tags

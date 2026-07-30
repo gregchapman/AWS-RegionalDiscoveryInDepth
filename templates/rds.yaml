@@ -1,8 +1,45 @@
 service: rds
 client: rds
-display_name: RDS Instances
+display_name: RDS Instances & Clusters
 
 operations:
+  - name: RDS DB Clusters
+    method: describe_db_clusters
+    paginator: true
+    result_key: DBClusters
+    id_field: DBClusterIdentifier
+    name_field: DBClusterIdentifier
+    key_prefix: rds-cluster
+    dr_note: "Aurora clusters require snapshot restore in DR region. Ensure param groups and subnet groups exist."
+    config_fields:
+      - DBClusterIdentifier
+      - DBClusterArn
+      - Engine
+      - EngineVersion
+      - EngineMode
+      - DatabaseName
+      - MasterUsername
+      - Port
+      - Endpoint
+      - ReaderEndpoint
+      - MultiAZ
+      - AvailabilityZones
+      - DBSubnetGroup
+      - VpcSecurityGroups[].VpcSecurityGroupId
+      - DBClusterParameterGroup
+      - BackupRetentionPeriod
+      - PreferredBackupWindow
+      - PreferredMaintenanceWindow
+      - StorageEncrypted
+      - KmsKeyId
+      - DeletionProtection
+      - CopyTagsToSnapshot
+      - EnabledCloudwatchLogsExports
+      - DBClusterMembers
+      - AllocatedStorage
+      - StorageType
+      - Status
+
   - name: RDS Instances
     method: describe_db_instances
     paginator: true
@@ -24,9 +61,83 @@ operations:
       - StorageEncrypted
       - KmsKeyId
       - MultiAZ
+      - PubliclyAccessible
+      - AutoMinorVersionUpgrade
       - DBSubnetGroup.DBSubnetGroupName
       - VpcSecurityGroups[].VpcSecurityGroupId
       - DBParameterGroups[].DBParameterGroupName
+      - OptionGroupMemberships[].OptionGroupName
       - BackupRetentionPeriod
+      - PreferredBackupWindow
+      - PreferredMaintenanceWindow
+      - DBClusterIdentifier
+      - DeletionProtection
+      - CopyTagsToSnapshot
+      - MonitoringInterval
+      - MonitoringRoleArn
+      - PerformanceInsightsEnabled
       - ReadReplicaSourceDBInstanceIdentifier
       - ReadReplicaDBInstanceIdentifiers
+
+  - name: RDS DB Subnet Groups
+    method: describe_db_subnet_groups
+    paginator: true
+    result_key: DBSubnetGroups
+    id_field: DBSubnetGroupName
+    name_field: DBSubnetGroupName
+    key_prefix: rds-subnet-group
+    dr_note: "Subnet group must exist in DR region before restoring DB. Subnet IDs will differ."
+    config_fields:
+      - DBSubnetGroupName
+      - DBSubnetGroupDescription
+      - VpcId
+      - SubnetGroupStatus
+      - Subnets[].SubnetIdentifier
+      - Subnets[].SubnetAvailabilityZone.Name
+
+  - name: RDS Parameter Groups
+    method: describe_db_parameter_groups
+    paginator: true
+    result_key: DBParameterGroups
+    id_field: DBParameterGroupName
+    name_field: DBParameterGroupName
+    key_prefix: rds-pg
+    dr_note: "Custom parameter groups must be recreated in DR before restoring instances/clusters."
+    skip_if:
+      DBParameterGroupName:
+        - default.aurora-postgresql16
+        - default.postgres16
+    config_fields:
+      - DBParameterGroupName
+      - DBParameterGroupFamily
+      - Description
+
+  - name: RDS Cluster Parameter Groups
+    method: describe_db_cluster_parameter_groups
+    paginator: true
+    result_key: DBClusterParameterGroups
+    id_field: DBClusterParameterGroupName
+    name_field: DBClusterParameterGroupName
+    key_prefix: rds-cpg
+    dr_note: "Custom cluster parameter groups must be recreated in DR before restoring clusters."
+    config_fields:
+      - DBClusterParameterGroupName
+      - DBParameterGroupFamily
+      - Description
+
+  - name: RDS Option Groups
+    method: describe_option_groups
+    paginator: true
+    result_key: OptionGroupsList
+    id_field: OptionGroupName
+    name_field: OptionGroupName
+    key_prefix: rds-og
+    dr_note: "Option groups must be recreated in DR. Some options have region-specific dependencies."
+    config_fields:
+      - OptionGroupName
+      - OptionGroupDescription
+      - EngineName
+      - MajorEngineVersion
+      - Options[].OptionName
+      - Options[].Port
+      - Options[].OptionSettings

@@ -1,0 +1,69 @@
+service: backup
+client: backup
+display_name: AWS Backup
+
+operations:
+  - name: Backup Vaults
+    method: list_backup_vaults
+    paginator: true
+    result_key: BackupVaultList
+    id_field: BackupVaultArn
+    name_field: BackupVaultName
+    key_prefix: bkvault
+    dr_note: "Backup vaults are regional. Cross-region copy rules replicate recovery points to DR vault."
+    config_fields:
+      - BackupVaultName
+      - BackupVaultArn
+      - EncryptionKeyArn
+      - CreationDate
+      - NumberOfRecoveryPoints
+      - LockConfiguration
+
+  - name: Backup Plans
+    method: list_backup_plans
+    paginator: true
+    result_key: BackupPlansList
+    id_field: BackupPlanId
+    name_field: BackupPlanName
+    key_prefix: bkplan
+    dr_note: "Plans define schedule, retention, and cross-region copy rules. Must recreate in DR if failover is permanent."
+    config_fields:
+      - BackupPlanId
+      - BackupPlanArn
+      - BackupPlanName
+      - VersionId
+      - CreationDate
+      - LastExecutionDate
+
+  # ── Chained: Selection rules per Backup Plan ──
+  - name: Backup Selections
+    method: list_backup_selections
+    paginator: true
+    result_key: BackupSelectionsList
+    id_field: SelectionId
+    name_field: SelectionName
+    key_prefix: bksel
+    dr_note: "Selections define which resources a plan protects. Resource ARNs are region-specific."
+    foreach:
+      parent_operation: Backup Plans
+      parent_field: BackupPlanId
+      kwarg_name: BackupPlanId
+      attach_parent_field: BackupPlanId
+    config_fields:
+      - SelectionId
+      - SelectionName
+      - BackupPlanId
+      - CreationDate
+      - IamRoleArn
+
+  - name: Protected Resources
+    method: list_protected_resources
+    paginator: true
+    result_key: Results
+    id_field: ResourceArn
+    key_prefix: bkprotected
+    dr_note: "Resources actively backed up by AWS Backup. Compare against full inventory to find coverage gaps."
+    config_fields:
+      - ResourceArn
+      - ResourceType
+      - LastBackupTime

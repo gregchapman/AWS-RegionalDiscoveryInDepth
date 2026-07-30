@@ -62,6 +62,43 @@ SKIP_OPERATIONS = {
     'describe_alarms',              # Works but we handle it explicitly
 }
 
+# ═══════════════════════════════════════════════════════════════════
+# SKIP SERVICES — Platform noise that exists in every AWS account.
+#
+# These services report "resources found" but are static AWS catalogs,
+# reference data, or management-plane metadata — not customer workloads.
+# Excluding them reduces inventory noise and keeps output focused on
+# resources that matter for DR, compliance, and architecture review.
+#
+# To re-include a service for a specific run, use:
+#   python3 service_enumerator.py --services artifact,health,...
+# ═══════════════════════════════════════════════════════════════════
+SKIP_SERVICES = {
+    # Static catalogs — same content in every account
+    'artifact',                     # AWS compliance reports (VPATs, SOC2, ISO)
+    'translate',                    # Supported language list
+    'elasticbeanstalk',             # Available platform versions
+    'fis',                          # Fault Injection Simulator action catalog
+    'pinpoint-sms-voice-v2',        # Country list for SMS notifications
+    'health',                       # Health event type definitions
+    'wellarchitected',              # Well-Architected lens catalog
+    'grafana',                      # Managed Grafana version list
+    'redshift-serverless',          # Redshift Serverless track catalog
+    'polly',                        # Voice/lexicon catalog
+
+    # Management-plane metadata — not customer workload resources
+    'service-quotas',               # List of services with quotas
+    'controlcatalog',               # Control Tower control catalog
+    'controltower',                 # Control Tower baselines
+    'appconfig',                    # Built-in extensions (AWS-managed)
+    'resource-explorer-2',          # Default view (always exists)
+    'launch-wizard',                # Launch Wizard metadata
+
+    # Services with default resources in every account
+    'keyspaces',                    # System keyspaces (system, system_schema, etc.)
+    'memorydb',                     # Default "open-access" ACL
+}
+
 # Preferred operations per service — when multiple list ops exist,
 # use the one most likely to give a meaningful resource count.
 # Format: service_name -> operation_name
@@ -347,6 +384,12 @@ def run_enumeration(region: str, max_workers: int = 20,
     all_services = get_available_services(region)
     if services_filter:
         all_services = [s for s in all_services if s in services_filter]
+    else:
+        # Exclude platform noise services (static catalogs, default resources)
+        skipped = [s for s in all_services if s in SKIP_SERVICES]
+        all_services = [s for s in all_services if s not in SKIP_SERVICES]
+        if skipped:
+            tprint(f"  Skipping {len(skipped)} platform/catalog services (SKIP_SERVICES)")
     
     tprint(f"\n{'=' * 60}")
     tprint(f"AWS Service Enumerator — {region}")

@@ -1,0 +1,72 @@
+service: s3_replication
+client: s3
+display_name: S3 Bucket DR Config
+
+operations:
+  # Base list of buckets (needed as parent for chained calls)
+  - name: S3 Buckets
+    method: list_buckets
+    paginator: false
+    result_key: Buckets
+    id_field: Name
+    name_field: Name
+    key_prefix: s3
+    config_fields:
+      - Name
+      - CreationDate
+
+  # ── Chained: Versioning per Bucket ──
+  - name: S3 Versioning
+    method: get_bucket_versioning
+    paginator: false
+    result_key: _raw
+    id_field: _parent_bucket
+    key_prefix: s3ver
+    dr_note: "Versioning must be enabled for CRR. Suspended = no new versions created."
+    foreach:
+      parent_operation: S3 Buckets
+      parent_field: Name
+      kwarg_name: Bucket
+      attach_parent_field: BucketName
+    config_fields:
+      - Status
+      - MFADelete
+
+  # ── Chained: Replication config per Bucket ──
+  - name: S3 Replication
+    method: get_bucket_replication
+    paginator: false
+    result_key: ReplicationConfiguration
+    id_field: Role
+    key_prefix: s3crr
+    dr_note: "CRR config. Buckets without this entry have NO cross-region replication."
+    foreach:
+      parent_operation: S3 Buckets
+      parent_field: Name
+      kwarg_name: Bucket
+      attach_parent_field: BucketName
+    config_fields:
+      - Role
+      - Rules
+
+  # ── Chained: Lifecycle config per Bucket ──
+  - name: S3 Lifecycle
+    method: get_bucket_lifecycle_configuration
+    paginator: false
+    result_key: Rules
+    id_field: _parent_bucket
+    key_prefix: s3lc
+    dr_note: "Lifecycle rules manage transitions and expirations. Must be recreated in DR."
+    foreach:
+      parent_operation: S3 Buckets
+      parent_field: Name
+      kwarg_name: Bucket
+      attach_parent_field: BucketName
+    config_fields:
+      - ID
+      - Status
+      - Filter
+      - Transitions
+      - Expiration
+      - NoncurrentVersionTransitions
+      - NoncurrentVersionExpiration
