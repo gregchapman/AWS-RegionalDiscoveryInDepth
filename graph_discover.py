@@ -45,25 +45,33 @@ CATEGORY_TIERS = {
     'EC2 Instances':                  ('workload', 'compute'),
     'Auto Scaling Groups':            ('workload', 'compute'),
     'RDS Instances':                  ('workload', 'database'),
+    'RDS DB Clusters':                ('workload', 'database'),
     'ElastiCache Clusters':           ('workload', 'cache'),
     'ElastiCache Replication Groups': ('workload', 'cache'),
     'Lambda Functions':               ('workload', 'serverless'),
+    'FSx File Systems':               ('workload', 'storage'),
 
     # Tier 2 — Routing
     'Load Balancers':         ('routing', 'load_balancing'),
     'Classic Load Balancers': ('routing', 'load_balancing'),
     'Target Groups':          ('routing', 'load_balancing'),
+    'Listeners':              ('routing', 'load_balancing'),
+    'Listener Rules':         ('routing', 'load_balancing'),
+    'Registered Targets':     ('routing', 'load_balancing'),
     'NAT Gateways':       ('routing', 'network'),
     'VPC Endpoints':      ('routing', 'network'),
     'Hosted Zones':       ('routing', 'dns'),
     'Transit Gateways':   ('routing', 'network'),
     'Transit Gateway Attachments': ('routing', 'network'),
     'VPC Peering Connections': ('routing', 'network'),
+    'Customer Gateways':  ('routing', 'network'),
+    'VPN Connections':    ('routing', 'network'),
 
     # Tier 3 — Boundary
     'VPCs':          ('boundary', 'network'),
     'Subnets':       ('boundary', 'network'),
     'Route Tables':  ('boundary', 'network'),
+    'DHCP Options':  ('boundary', 'network'),
 
     # Tier 4 — Attached
     'Security Groups':   ('attached', 'security'),
@@ -973,6 +981,73 @@ def render_drawio(model: InventoryModel, filepath: str):
             add_cell(vpc_id, name, NAT_STYLE,
                      vpc_w - 100, 30 + i * 80, S, S)
 
+        # ── FSx File Systems (data tier, next to RDS) ──
+        FSX_STYLE = (
+            'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#7AA116;'
+            'strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;'
+            'align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;'
+            'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.fsx;'
+        )
+        fsx_items = model.by_category('FSx File Systems')
+        fsx_in_vpc = [f for f in fsx_items
+                      if f.get('config', {}).get('VpcId') == vpc_rid]
+        for i, fsx in enumerate(fsx_in_vpc):
+            fsx_name = fsx.get('name', 'FSx')
+            fsx_cfg = fsx.get('config', {})
+            fsx_type = fsx_cfg.get('FileSystemType', '')
+            capacity = fsx_cfg.get('StorageCapacity', '')
+            label = f'{fsx_name}<br><font style="font-size:9px">{fsx_type} | {capacity}GB</font>'
+            idx = len(rds) + len(cache) + i
+            col = idx % DATA_PER_ROW
+            row = idx // DATA_PER_ROW
+            fsx_cell = add_cell(vpc_id, label, FSX_STYLE,
+                                30 + col * 160, data_y + row * 100, S, S)
+            id_map[fsx.get('resource_id', '')] = fsx_cell
+
+        # ── VPC Endpoints (right side of VPC, below NATs) ──
+        VPCE_STYLE = (
+            'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;'
+            'strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;'
+            'align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;pointerEvents=1;'
+            'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.vpc_endpoint;'
+        )
+        vpce_items = [e for e in model.by_category('VPC Endpoints')
+                      if e.get('config', {}).get('VpcId') == vpc_rid]
+        for i, vpce in enumerate(vpce_items):
+            svc_name = vpce.get('config', {}).get('ServiceName', '')
+            # Extract short service name from full service name
+            short_svc = svc_name.split('.')[-1] if svc_name else vpce.get('name', 'vpce')
+            add_cell(vpc_id, short_svc, VPCE_STYLE,
+                     vpc_w - 100, 30 + len(nats) * 80 + 20 + i * 70, 50, 50)
+
+        # ── LB → Target Group → Instance edges ──
+        # Trace: Registered Targets have TargetGroupArn → Target.Id (instance ID)
+        # Target Groups have LoadBalancerArns → match to LBs
+        registered_targets = model.by_category('Registered Targets')
+        target_groups = model.by_category('Target Groups')
+        for tg in target_groups:
+            tg_cfg = tg.get('config', {})
+            tg_arn = tg.get('resource_id', '')
+            lb_arns = tg_cfg.get('LoadBalancerArns', [])
+            # Find which LB this TG belongs to
+            lb_cell = None
+            if isinstance(lb_arns, list):
+                for lb_arn in lb_arns:
+                    if lb_arn in id_map:
+                        lb_cell = id_map[lb_arn]
+                        break
+            if not lb_cell:
+                continue
+            # Find registered targets for this TG
+            for rt in registered_targets:
+                rt_cfg = rt.get('config', {})
+                rt_tg_arn = rt_cfg.get('TargetGroupArn', rt_cfg.get('_parent_arn', ''))
+                if rt_tg_arn != tg_arn:
+                    continue
+                target_id = rt_cfg.get('Id', '')
+                if target_id in id_map:
+                    add_edge(lb_cell, id_map[target_id])
+
         vpc_y += vpc_h + 60
 
     # ── Transit Gateways (between VPCs) ──
@@ -1133,6 +1208,106 @@ def render_drawio(model: InventoryModel, filepath: str):
             geo = ET.SubElement(edge, 'mxGeometry', relative='1')
             geo.set('as', 'geometry')
             pcx_remote_y += 80
+
+    # ── VPN Connections + Customer Gateways (near TGWs) ──
+    VPN_STYLE = (
+        'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;'
+        'strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;'
+        'align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;'
+        'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.site_to_site_vpn;'
+    )
+    CGW_STYLE = (
+        'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;'
+        'strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;'
+        'align=center;html=1;fontSize=11;fontStyle=0;aspect=fixed;pointerEvents=1;'
+        'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.customer_gateway;'
+    )
+    vpn_connections = model.by_category('VPN Connections')
+    customer_gateways = model.by_category('Customer Gateways')
+    if vpn_connections or customer_gateways:
+        vpn_y = vpc_y
+        # Customer gateways first
+        for i, cgw in enumerate(customer_gateways):
+            cgw_name = cgw.get('name', cgw.get('resource_id', 'CGW'))
+            cgw_cfg = cgw.get('config', {})
+            ip = cgw_cfg.get('IpAddress', '')
+            label = f'{cgw_name}<br><font style="font-size:9px">{ip}</font>'
+            cgw_cell = add_cell('1', label, CGW_STYLE,
+                                50 + i * 200, vpn_y, S, S)
+            id_map[cgw.get('resource_id', '')] = cgw_cell
+
+        # VPN connections with edges to TGW/VGW and CGW
+        for i, vpn in enumerate(vpn_connections):
+            vpn_cfg = vpn.get('config', {})
+            vpn_name = vpn.get('name', vpn.get('resource_id', 'VPN'))
+            label = f'{vpn_name}<br><font style="font-size:9px">VPN</font>'
+            vpn_cell = add_cell('1', label, VPN_STYLE,
+                                50 + len(customer_gateways) * 200 + i * 200, vpn_y, S, S)
+            id_map[vpn.get('resource_id', '')] = vpn_cell
+
+            # Edge to customer gateway
+            cgw_id_val = vpn_cfg.get('CustomerGatewayId', '')
+            if cgw_id_val in id_map:
+                add_edge(vpn_cell, id_map[cgw_id_val])
+            # Edge to transit gateway
+            tgw_id_val = vpn_cfg.get('TransitGatewayId', '')
+            if tgw_id_val in id_map:
+                add_edge(vpn_cell, id_map[tgw_id_val])
+
+        vpc_y = vpn_y + 120
+
+    # ── EventBridge Rules (with edges to Lambda targets) ──
+    EB_STYLE = (
+        'outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;'
+        'strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;'
+        'align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;'
+        'shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eventbridge;'
+    )
+    EB_EDGE_STYLE = (
+        'edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;'
+        'jettySize=auto;html=1;strokeColor=#E7157B;strokeWidth=1;'
+        'dashed=1;endArrow=blockThin;endFill=1;'
+    )
+    eb_rules = model.by_category('EventBridge Rules')
+    if eb_rules:
+        eb_y = vpc_y
+        eb_container_id = add_cell('1', 'EventBridge Rules',
+                                   TIER_STYLE, 50, eb_y, 700, 120)
+        for i, rule in enumerate(eb_rules):
+            rule_name = rule.get('name', rule.get('resource_id', 'rule'))
+            rule_cfg = rule.get('config', {})
+            state = rule_cfg.get('State', '')
+            schedule = rule_cfg.get('ScheduleExpression', '')
+            sublabel = schedule if schedule else state
+            label = f'{rule_name[:25]}<br><font style="font-size:8px">{sublabel}</font>'
+            rule_cell = add_cell(eb_container_id, label, EB_STYLE,
+                                 30 + i * 160, 30, 50, 50)
+            id_map[rule.get('resource_id', rule_name)] = rule_cell
+
+            # Draw edge to Lambda targets (if Targets contain Lambda ARNs)
+            targets = rule_cfg.get('Targets', [])
+            if isinstance(targets, list):
+                for target in targets:
+                    if isinstance(target, dict):
+                        target_arn = target.get('Arn', '')
+                        if ':function:' in target_arn:
+                            # Extract function name from ARN
+                            func_name = target_arn.split(':function:')[-1]
+                            # Find matching Lambda in id_map
+                            for res_id, cell_id in id_map.items():
+                                if func_name in str(res_id):
+                                    eid = next_id()
+                                    edge = ET.SubElement(graph_root, 'mxCell',
+                                                         id=eid, value='',
+                                                         style=EB_EDGE_STYLE,
+                                                         edge='1', parent='1',
+                                                         source=rule_cell,
+                                                         target=cell_id)
+                                    geo = ET.SubElement(edge, 'mxGeometry', relative='1')
+                                    geo.set('as', 'geometry')
+                                    break
+
+        vpc_y = eb_y + 160
 
     # ── Lambdas outside VPC ──
     # Collect all Lambda resource_ids that were placed inside a VPC

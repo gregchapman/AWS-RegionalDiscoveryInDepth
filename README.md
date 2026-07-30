@@ -591,6 +591,20 @@ Add an entry to `CFN_TYPE_MAP` in `iac_blueprint.py`:
 
 The category name must match the operation `name` in your discovery template.
 
+## Operational Scripts (`scripts/`)
+
+Standalone utilities for DR preparation and post-implementation assessment.
+See [scripts/README.md](scripts/README.md) for full documentation.
+
+| Category | Scripts |
+|----------|---------|
+| **DR Preparation** | `replicate-secrets.py`, `replicate-parameters.py`, `map-backup-to-resources.py` |
+| **Verification** | `map-all-internet-facing-resources.py`, `dns-to-target-walk.py` |
+| **Change Auditing** | `sg-vpc-config-changes.py`, `rt-config-changes.py`, `compute-config-changes.py`, `iam-policy-config-changes.py` |
+
+All scripts use CLI arguments (no hardcoded customer values) and work in
+both commercial and GovCloud regions.
+
 ## Requirements
 
 - Python 3.8+

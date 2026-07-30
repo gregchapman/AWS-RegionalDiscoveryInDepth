@@ -197,10 +197,16 @@ automatically. If not (common gap), you must script or manually copy.
 
 ### Credentials and Secrets
 
-- Retrieve secret values from Secrets Manager and store securely for
-  manual recreation in DR
-- Export SSM Parameter Store values (non-SecureString can be scripted;
-  SecureString values need the source KMS key or manual re-entry)
+- Replicate secrets to DR region:
+  ```bash
+  python3 scripts/replicate-secrets.py \
+    --source-region us-gov-west-1 --dest-region us-gov-east-1
+  ```
+- Replicate SSM parameters to DR region:
+  ```bash
+  python3 scripts/replicate-parameters.py \
+    --source-region us-gov-west-1 --dest-region us-gov-east-1
+  ```
 - Gather AD admin credentials for domain controller promotion
 - Collect any third-party API keys, certificates, license files
 
@@ -235,6 +241,14 @@ Follow `DEPLOY.md` commands in order. For each stack:
 - [ ] Security Groups — are the right ports open?
 - [ ] DNS — does name resolution work for internal and external names?
 - [ ] TGW/VPN — is cross-VPC or on-prem connectivity working?
+- [ ] Internet-facing paths verified:
+  ```bash
+  python3 scripts/map-all-internet-facing-resources.py --region <dr-region>
+  ```
+- [ ] DNS-to-target paths verified (if Route 53 zones exist):
+  ```bash
+  python3 scripts/dns-to-target-walk.py --zone-id <zone-id> --region <dr-region>
+  ```
 
 ### Application Checks
 
