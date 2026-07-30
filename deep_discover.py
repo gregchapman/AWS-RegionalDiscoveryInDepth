@@ -234,7 +234,11 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
                 # Fall back to single call
                 method = getattr(client, method_name)
                 response = method(**extra_kwargs)
-                if result_key:
+                if result_key == '_response':
+                    flat = {k: v for k, v in response.items() if k != 'ResponseMetadata'}
+                    if flat:
+                        raw_items = [flat]
+                elif result_key:
                     raw_items = response.get(result_key, [])
                     unwrap = op_config.get('unwrap_key', '')
                     if unwrap:
@@ -243,10 +247,19 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
                             if isinstance(group, dict):
                                 expanded.extend(group.get(unwrap, []))
                         raw_items = expanded
+                    if isinstance(raw_items, dict):
+                        raw_items = [raw_items]
         else:
             method = getattr(client, method_name)
             response = method(**extra_kwargs)
-            if result_key:
+            if result_key == '_response':
+                # Special case: treat the entire response as a single resource.
+                # Used for APIs like get_bucket_versioning that return a flat dict
+                # rather than a list of resources.
+                flat = {k: v for k, v in response.items() if k != 'ResponseMetadata'}
+                if flat:  # Only add if there's actual data beyond ResponseMetadata
+                    raw_items = [flat]
+            elif result_key:
                 raw_items = response.get(result_key, [])
                 unwrap = op_config.get('unwrap_key', '')
                 if unwrap:
@@ -255,6 +268,10 @@ def discover_operation(client, op_config: dict, service_name: str) -> List[Dict]
                         if isinstance(group, dict):
                             expanded.extend(group.get(unwrap, []))
                     raw_items = expanded
+                # Handle case where result_key points to a dict (not a list)
+                # e.g., get_bucket_replication returns ReplicationConfiguration as a dict
+                if isinstance(raw_items, dict):
+                    raw_items = [raw_items]
             else:
                 for k, v in response.items():
                     if k == 'ResponseMetadata':

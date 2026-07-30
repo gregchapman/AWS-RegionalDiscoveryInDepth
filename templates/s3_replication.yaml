@@ -19,8 +19,8 @@ operations:
   - name: S3 Versioning
     method: get_bucket_versioning
     paginator: false
-    result_key: _raw
-    id_field: _parent_bucket
+    result_key: _response
+    id_field: BucketName
     key_prefix: s3ver
     dr_note: "Versioning must be enabled for CRR. Suspended = no new versions created."
     foreach:
