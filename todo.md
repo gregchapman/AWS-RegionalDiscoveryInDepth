@@ -3,221 +3,90 @@
 ## Project Context
 
 This tool inventories AWS accounts and generates CloudFormation templates for
-disaster recovery (recreate environment in a different region). It runs as a
-pipeline: enumerate services → discover resources → generate IaC → assess gaps.
+disaster recovery (recreate environment in a different region). The pipeline:
+enumerate services → discover resources → generate IaC → assess gaps.
 
-**Active customer test case:** Instem (account 048766100331, us-gov-west-1).
-They want to simulate their region being unavailable and rebuild in us-gov-east-1.
-Their environment: 30 EC2, 3 RDS (Aurora Postgres + 2 Oracle), 1 FSx Windows
+**Active customer:** Instem (account 048766100331, us-gov-west-1 → us-gov-east-1).
+Environment: 30 EC2, 3 RDS (Aurora Postgres + 2 Oracle), 1 FSx Windows
 (AD-joined), 4 NLBs, 44 SGs, 647 EBS snapshots, 10 KMS keys, 7 Lambda,
 4 Transit Gateways, VPN to on-prem.
 
 **Reference implementations:**
-- `C:\RGS-Code\N-Able\n-able-nonprod\generated\` — Earlier manually-guided
-  tier templates (01-security-groups through 05-serverless) showing correct
-  patterns for SG cross-refs, compute AMI params, data tier snapshot restore,
-  network tier LB wiring with ALB listener rules
-- `C:\RGS-Code\Instem-rgs-3808821-048766100331\2026073100\` — Latest full
-  pipeline run with updated code
+- `C:\RGS-Code\N-Able\n-able-nonprod\generated\` — Gold standard for template
+  quality: typed params, SG cross-refs, compute AMI params, data tier snapshot
+  restore, network tier LB wiring. Use as style target.
+- `C:\RGS-Code\Instem-rgs-3808821-048766100331\20260731-175636\` — Latest Instem
+  run with v3 graph-driven generator
+
+**Architecture Decision Records:** `.kiro/steering/adr-*.md` (7 ADRs capturing
+key decisions — read these before making architectural changes)
 
 ---
 
-## Critical Next Step: Graph-Driven IaC Generation — COMPLETED
+## Current State (as of 2026-07-31)
 
-See "Completed" section below for implementation details.
-
-The architecture described here has been implemented across three modules:
-`dependency_graph.py`, `schema_template_generator.py`, and the new
-`iac_blueprint.py` (v3). The old tier-based generator is preserved as
-`iac_blueprint_v1.py`.
-
-### Architecture (as implemented)
-
-The new `iac_blueprint.py` should work like this:
+The v3 graph-driven IaC generator works end-to-end:
 
 ```
-INVENTORY (any resource)
-    ↓
-MAP to CFN type (CATEGORY_TO_CFN_TYPE + dynamic lookup)
-    ↓
-PULL CFN schema (cfn_schema_cache.py — all properties, immutables, dependencies)
-    ↓
-BUILD DEPENDENCY GRAPH
-  - VPC before Subnet before NAT/Endpoints
-  - SGs before anything that references them
-  - KMS before anything encrypted
-  - DCs/Directories before AD-joined resources (FSx, domain-joined EC2)
-  - Subnet Groups before RDS/ElastiCache
-  - LBs before Listeners, TGs before Listener actions
-  - Compute before Target Registration
-    ↓
-PARTITION GRAPH into deployment groups (blast radius boundaries)
-  - Each group = one CFN stack
-  - Group size limited by CFN resource limit (500) and logical affinity
-  - Groups ordered by dependency (no group deploys before its dependencies)
-    ↓
-GENERATE TEMPLATE per group
-  - For each resource: emit ALL properties from inventory that match the schema
-  - Region-specific values → Parameters (with source value in comments)
-  - Immutable properties → forced into template or params with warnings
-  - Cross-group references → !ImportValue
-  - Intra-group references → !Ref
-    ↓
-GENERATE PARAMS per group
-  - YAML with comments showing source values
-  - IMMUTABLE properties called out explicitly
-  - REQUIRED markers for values not in inventory
-    ↓
-GENERATE DEPLOY.md
-  - Deployment order from graph
-  - Pre/post steps per group (AD health check, target registration, etc.)
+discover.py orchestrates:
+  1. service_enumerator.py  → what services have resources
+  2. auto_template.py      → generate discovery schemas for found services  
+  3. deep_discover.py      → detailed inventory (YAML templates drive API calls)
+  4. graph_discover.py     → architecture views + draw.io diagram
+  5. cfn_schema_cache.py   → cache CFN schemas for immutables
+  6. iac_blueprint.py (v3) → graph-driven CloudFormation templates
+  7. dr_assess.py          → DR readiness gap report
 ```
 
-### Key Design Principles
+**IaC generation pipeline:**
+```
+inventory → dependency_graph.py → ordered deployment groups
+    → schema_template_generator.py → per-group CFN templates
+    → iac_blueprint.py orchestrates, writes templates/ + DEPLOY.md
+```
 
-1. **No hardcoded tier names or counts.** The output structure is determined by
-   the graph, not by the code structure.
-
-2. **Schema-driven property emission.** For any resource in inventory, look up
-   its CFN type schema. Emit every property that exists in both the inventory
-   config AND the schema. Don't hardcode which fields to emit per resource type.
-
-3. **Bespoke handling for complex wiring only.** Some resources need special
-   treatment that a generic approach can't handle:
-   - SG self-referencing rules (need separate SecurityGroupIngress resources)
-   - LB → Listener → TG → Target chain (ordering and action wiring)
-   - DC boot-order detection (from tags or DHCP DNS server IPs)
-   - FSx AD-join dependency
-   These stay as specialized logic, but the *default path* for any resource
-   should be schema-driven generation.
-
-4. **The service enumerator finds it, the schema handles it.** If a customer
-   has EKS and we have no hand-crafted template for it, the auto-template
-   system captures what it can, and the IaC generator uses the CFN schema to
-   know what properties exist and which are immutable. We don't need to
-   anticipate every service — the schema IS the anticipation.
-
-5. **Dependency graph comes from CFN schema `dependencies` + known patterns.**
-   The schema tells us which properties reference other resource types
-   (e.g., SubnetId references a Subnet). Combined with a small set of known
-   ordering rules (VPC → Subnet → SG → Compute), we can auto-derive order.
-
-### Implementation — DONE
-
-1. ✅ `dependency_graph.py` module:
-   - Input: inventory categories + their CFN types
-   - Derives edges from: property references, known patterns, AD dependencies
-   - Outputs: ordered list of deployment groups with resources assigned
-   - Partitions respecting 200-resource cap (well under CFN 500 limit)
-
-2. ✅ `schema_template_generator.py` module:
-   - Input: resource config dict + CFN schema
-   - Outputs: CFN resource properties block with all matching fields
-   - Handles: parameterization of region-specific values, immutable marking
-   - Falls back gracefully when no schema cache is available
-
-3. ✅ `iac_blueprint.py` rewritten as orchestrator:
-   - Load inventory → map to CFN types → build graph → partition → generate
-   - Bespoke handlers for SGs (cross-refs) and LBs (action wiring)
-   - Everything else goes through the generic schema-driven path
-
-4. ✅ `iac_blueprint_v1.py` retained as fallback:
-   - Accessible via `python3 iac_blueprint.py --v1`
-   - Instem output doesn't regress while we validate the generic path
+**Latest Instem output (10 templates, zero errors):**
+- 00-foundation: VPC, 12 subnets, 14 route tables + routes, IGW, DHCP, NATs
+- 01-security: 44 SGs with cross-ref !Ref and ingress rules
+- 02-encryption: 10 KMS keys + aliases (KeySpec/KeyUsage/MultiRegion immutables)
+- 03-data: Aurora cluster, 3 RDS (Oracle immutables), FSx with AD join config
+- 04-dc_compute: 2 DCs (boot-first, AD health verification)
+- 05-compute: 28 instances (SubnetId, source instance profiles, SGs)
+- 06-network: 3 NLBs + TGs + Listeners wired
+- 07-serverless: 7 Lambda + 4 EventBridge
+- 08-supporting: 48 CW Alarms, 8 VPC Endpoints, 2 ACM, 3 SNS
+- 09-connectivity: 1 TGW + 1 CGW + 1 VPN
 
 ---
 
-## Completed
+## In Progress — Template Rendering Quality
 
-### Chained Calls (foreach) — DONE
+Fixes committed but not yet tested in a fresh Instem run:
+- ✅ SG ingress rules: now reads `IpPermissions` (was looking for wrong field name)
+- ✅ DHCP options: parses `DhcpConfigurations[].Key/Values` structure correctly
+- ✅ SNS topics: parses TopicName from TopicArn when not stored directly
 
-The template engine supports `foreach` directives for per-resource
-follow-up API calls (Listeners per LB, Rules per Listener, etc.).
-
-### DR Readiness Discovery Templates — DONE
-
-Templates for backup/replication gap analysis: s3_replication, backup,
-ebs_snapshots, ami_inventory, fsx, vpn, secretsmanager, vpc, elbv2, rds.
-
-### DR Readiness Assessment (`dr_assess.py`) — DONE
-
-Produces `dr-gaps.md` with 10 severity-ranked checks and recommended
-recovery sequence.
-
-### IaC Blueprint v1 (Tier-Based) — DONE (superseded by v3)
-
-Current `iac_blueprint_v1.py` produces 8 tier templates for Instem's environment:
-00-foundation, 01-security-groups, 02-data-tier, 03a-dc-compute,
-03-compute-tier, 04-network-tier, 05-serverless, 06-supporting.
-
-This works for Instem but doesn't generalize. Superseded by graph-driven
-approach (v3). Available as fallback via `python3 iac_blueprint.py --v1`.
-
-### Graph-Driven IaC Blueprint (v3) — DONE
-
-New `iac_blueprint.py` implements the graph-driven architecture:
-
-- `dependency_graph.py` — builds resource graph, derives tier ordering,
-  partitions into deployment groups (respects 500-resource CFN limit)
-- `schema_template_generator.py` — generic CFN block generation from
-  any resource config + CFN schema. Handles parameterization, immutable
-  marking, cross-group ImportValue
-- `iac_blueprint.py` — orchestrator. Routes SGs and LBs to bespoke
-  handlers, everything else through schema-driven path
-
-Validated against OAG-CS-FS (3117 deployable resources → 23 groups)
-and synthetic Instem-like data. Old tier-based generator preserved as
-`iac_blueprint_v1.py` (accessible via `--v1` flag).
-
-### CFN Schema Integration — DONE
-
-- `cfn_schema_cache.py` — fetches/caches schemas from DescribeType
-- `cfn_immutables.py` — audit tool comparing templates vs schemas
-- `enforce_immutables()` in iac_blueprint.py — forces missing immutables
-  into parameter files with warnings
-- `discover.py` pipeline builds cache before IaC generation (Step 5)
-
-### Immutable Properties Expansion — DONE
-
-Discovery templates updated with all known immutable fields:
-- EC2: Tenancy, PlacementGroup, HostId, BlockDeviceMappings, CpuOptions,
-  MetadataOptions, CreditSpecification, NetworkInterfaces, HibernationOptions
-- RDS: CharacterSetName, NcharCharacterSetName, LicenseModel, NetworkType
-- RDS Clusters: GlobalClusterIdentifier, ServerlessV2ScalingConfiguration
-- FSx: FileSystemTypeVersion, OpenZFS, Lustre PerUnitStorageThroughput
-- ELBv2 TGs: ProtocolVersion, IpAddressType
-- KMS: KeySpec, KeyUsage, MultiRegion (via describe_key foreach_detail)
-- VPC: InstanceTenancy, IPv6 CIDRs
-- ElastiCache: TransitEncryptionMode, NetworkType, ClusterEnabled
-- SNS: FifoTopic, ContentBasedDeduplication (via get_topic_attributes foreach_detail)
-- VPN: EnableAcceleration, TunnelInsideCidr, OutsideIpAddressType
-
----
-
-## In Progress
-
-### foreach_detail Pattern Validation
-
-The KMS and SNS templates use a `foreach_detail` directive pattern
-(call describe_key / get_topic_attributes per resource found by list operation).
-This pattern needs verification that `deep_discover.py` actually supports it.
-If not, either add support to the discovery engine or convert these to
-standard `foreach` operations.
-
-### Route Table Handling
-
-The foundation tier creates subnets but doesn't recreate route table
-associations or custom routes. Route tables have routes that reference
-TGWs, NAT GWs, Internet GWs — all with region-specific IDs. Need to:
-- Include route tables in foundation template
-- Parameterize gateway references
-- Associate route tables to subnets
+**Still needed (next session):**
+- SG egress rules: `IpPermissionsEgress` not yet rendered in template
+- Multi-VPC: foundation takes `vpcs[0]`; should iterate or split per VPC
+- VPC Endpoint subnet associations not rendered
+- S3 Buckets not rendered in supporting tier (policy, lifecycle, versioning)
+- `foreach_detail` pattern verification (KMS describe_key, SNS get_topic_attributes)
+  — these immutable fields may not be in the inventory yet
 
 ---
 
 ## Planned (Priority Order)
 
-### 1. Remediation IaC Generator
+### 1. Template Completeness Audit
+
+Run v3 against Instem with all fixes, then:
+- cfn-lint the output templates
+- Compare resource-by-resource against the N-Able reference for quality
+- Verify every resource in the inventory appears in exactly one template
+  (or is explicitly in manual-steps.md / assessment-only)
+
+### 2. Remediation IaC Generator
 
 Prescriptive CFN to fix DR readiness gaps BEFORE a recovery is needed:
 - AWS Backup plan + vault + cross-region copy rules
@@ -225,31 +94,25 @@ Prescriptive CFN to fix DR readiness gaps BEFORE a recovery is needed:
 - DLM policies with cross-region copy
 - AMI copy automation (Lambda + EventBridge)
 
-This goes into the *source region* to establish replication foundation.
-
-### 2. Hand-Crafted Templates for Common Services
+### 3. Hand-Crafted Discovery Templates
 
 Priority based on GovCloud prevalence:
 - `ecs.yaml` — clusters, services, task definitions (chained)
 - `eks.yaml` — clusters, node groups, Fargate profiles, addons
 - `dynamodb.yaml` — tables, GSIs, streams, global tables
 - `sqs.yaml` — queues, DLQ configs, policies
-- `route53.yaml` — hosted zones + `list_resource_record_sets` per zone
-- `apigateway.yaml` — REST/HTTP APIs, stages, authorizers
-- `stepfunctions.yaml` — state machines, activities
-- `ecr.yaml` — repositories, lifecycle policies
+- `route53.yaml` — hosted zones + records (chained)
 
-### 3. Deployment Orchestrator
+### 4. Deployment Orchestrator
 
-Options remain: Sceptre, custom deploy.py, or hybrid.
-Decision deferred until graph-driven IaC generation is complete
-(the orchestrator consumes whatever the graph produces).
+Custom `deploy.py` consuming graph output (see ADR-0006).
+Decision: NOT Sceptre — we need dynamic, discovery-driven deployment.
 
-### 4. CFN Linting
+### 5. CFN Linting
 
 Validate generated templates with cfn-lint before writing.
 
-### 5. Import Mode
+### 6. Import Mode
 
 The `--mode import` flag (exact state reproduction) needs testing.
 
@@ -258,15 +121,13 @@ The `--mode import` flag (exact state reproduction) needs testing.
 ## Known Issues
 
 - `auto_template.py` generates poor discovery schemas for many services
-  (picks wrong operations, captures no fields). Until the schema-driven
-  IaC generator exists, services without hand-crafted templates get
-  shallow coverage.
-- The `foreach_detail` pattern in KMS/SNS templates may not be implemented
-  in `deep_discover.py`. Needs verification on next live run.
-- Route tables are discovered but not reproduced in IaC output.
-- No per-resource param files in new approach (one param file per tier).
-  May need to reconsider for environments with 100+ instances where a
-  single compute param file becomes unwieldy.
+  (picks wrong operations, captures no fields)
+- `foreach_detail` pattern in KMS/SNS templates not verified in deep_discover.py
+- Foundation template takes first VPC only — breaks for multi-VPC accounts
+- No egress rules in SG template (ingress only)
+- Inventory field names are raw AWS API names with collision-safe suffixes
+  (`SubnetId_SubnetId`, `IpPermissions` not `IngressRules`) — see ADR-0005
+- Generator must always be tested against REAL inventory, not synthetic data
 
 ---
 
@@ -274,12 +135,15 @@ The `--mode import` flag (exact state reproduction) needs testing.
 
 | Decision | Rationale |
 |----------|-----------|
-| YAML param files, not JSON | Comments with source values, human-readable |
+| Graph determines stack count | ADR-0001: adapts to any customer |
+| Self-contained templates, no param files | ADR-0002: operator-readable, console-deployable |
+| Bespoke handlers for SGs + LBs only | ADR-0003: relationship wiring can't be generic |
+| Source instance profiles as params | ADR-0004: CCPM profiles may already exist in DR |
+| Field names match AWS API exactly | ADR-0005: no normalization layer |
+| Custom orchestrator, not Sceptre | ADR-0006: discovery-driven, not design-driven |
+| .get() everywhere, iterate all lists | ADR-0007: never assume dimension or existence |
 | Schemas cached to ~/.cfn-schemas/ | No hard dependency on live API at generation time |
-| Immutables enforcement is graceful | Works without cache, just skips enforcement |
-| Assessment-only categories excluded from IaC | Snapshots, AMIs, volumes are inputs to restore, not deploy targets |
-| SG cross-refs resolved via Ref | Most reliable CFN pattern for circular SG dependencies |
-| DC detection from tags (Role: DC) | Works across all customers who follow CCPM tagging |
-| DCs separated into boot-first template | AD must be healthy before FSx and domain-joined compute |
-| Gateway LBs excluded from network tier | Infrastructure-managed, not customer-recoverable |
+| Assessment-only categories excluded | Snapshots/AMIs are inputs to restore, not deploy targets |
+| DC detection from tags (Role: DC) | Works across CCPM-tagged customers |
+| Gateway LBs excluded | Infrastructure-managed, not customer-recoverable |
 | Shared TGWs (OwnerId ≠ account) excluded | Can't recreate resources owned by another account |

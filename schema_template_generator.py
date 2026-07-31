@@ -199,7 +199,7 @@ def generate_foundation(resources, inventory):
 
         props = OrderedDict()
         if dhcp_map.get('domain-name'):
-            props['DomainName'] = dhcp_map['domain-name'][0]
+            props['DomainName'] = dhcp_map['domain-name'][0] if dhcp_map['domain-name'] else ''
         if dhcp_map.get('domain-name-servers'):
             props['DomainNameServers'] = dhcp_map['domain-name-servers']
         if dhcp_map.get('ntp-servers'):
