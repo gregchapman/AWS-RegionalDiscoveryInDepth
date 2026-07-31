@@ -135,6 +135,9 @@ SKIP_SERVICES = {
     # Services with default resources in every account
     'keyspaces',                    # System keyspaces (system, system_schema, etc.)
     'memorydb',                     # Default "open-access" ACL
+
+    # Broken/dead endpoints
+    'inspector',                    # Legacy Inspector v1 — endpoint times out in GovCloud (use inspector2)
 }
 
 # Preferred operations per service — when multiple list ops exist,
@@ -328,7 +331,18 @@ def probe_service(service_name: str, region: str) -> Dict:
         try:
             # Use pre-cached credentials to avoid IMDS contention
             session = _get_session(region)
-            client = session.client(service_name)
+            # Cap per-service timeout: 30s connect, 30s read — prevents dead endpoints
+            # from stalling the entire run (default botocore retries would otherwise
+            # compound to 300s+ for unresponsive endpoints)
+            from botocore.config import Config as BotoConfig
+            client = session.client(
+                service_name,
+                config=BotoConfig(
+                    connect_timeout=30,
+                    read_timeout=30,
+                    retries={'max_attempts': 2},
+                ),
+            )
 
             # Find the best list operation
             operation = find_list_operation(service_name, client)

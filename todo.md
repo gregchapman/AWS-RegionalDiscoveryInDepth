@@ -54,6 +54,50 @@ inventory and produces `dr-gaps.md`:
 
 ## In Progress
 
+### IaC Blueprint Rewrite — Tier-Based Templates with Rich YAML Params
+
+The current `iac_blueprint.py` produces generic one-template-per-type output
+that's too thin to be useful and generates noise for assessment-only categories.
+
+**Status: Phase 1 (noise elimination) complete. Phase 2 (tier templates) next.**
+
+**Phase 1 — DONE:**
+- `ASSESSMENT_ONLY` set (18 categories) — EBS Snapshots, AMIs, S3 Versioning,
+  DLM Policies, FSx Backups, auto-template catalog data — all silently skipped
+- Clean separation: BESPOKE_HANDLED (10), ASSESSMENT_ONLY (18), NO_CFN (2), CFN_TYPE_MAP (54)
+
+**Phase 2 — Tier-based template generation (next session):**
+Replace generic per-type templates with grouped deployment tiers:
+
+```
+00-foundation.yaml      VPC, Subnets, Route Tables, DHCP Options
+01-security-groups.yaml All SGs with cross-references (existing bespoke)
+02-data-tier.yaml       RDS + subnet groups + param groups + FSx + restore-from-backup
+03-compute-tier.yaml    EC2 instances grouped by function, AMI params
+03a-dc-compute.yaml     Domain Controllers (separate — boot order critical)
+04-network-tier.yaml    LBs + Listeners + TGs wired with Ref/ImportValue
+05-serverless.yaml      Lambda + EventBridge rules + targets
+06-supporting.yaml      VPC Endpoints, NAT Gateways, KMS keys, ACM certs
+07-dr-protection.yaml   DLM policies, Backup plans, S3 CRR configs
+```
+
+Each tier template will:
+- Group related resources into one CFN stack with internal `!Ref` wiring
+- Use `!ImportValue` for cross-stack dependencies (SG IDs, VPC ID)
+- Include Name tags for human readability
+- Use YAML parameter files with:
+  - Comments showing source-region values for reference
+  - Empty keys for dynamic values (user fills in at deploy time)
+  - Descriptive text explaining what each param represents
+
+**Reference material:** `C:\RGS-Code\N-Able\dr_template_generator.py` (incomplete
+but shows correct patterns for SG cross-refs, compute AMI params, data tier
+snapshot restore, network tier LB wiring)
+
+**Key principle:** Don't put dynamic values (VPC IDs, subnet IDs) as defaults
+in param files. Leave them empty with a comment showing what the source value
+was. The operator supplies the DR value at deploy time.
+
 ### Remediation IaC Generator
 
 Prescriptive CloudFormation stacks to fix identified gaps:

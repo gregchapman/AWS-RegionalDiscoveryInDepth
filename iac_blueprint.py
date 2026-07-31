@@ -931,13 +931,36 @@ BESPOKE_HANDLED = {
     'Listeners',             # generate_network_template()
     'Listener Rules',        # generate_network_template() — informational, actions reference TGs
     'Registered Targets',    # generate_network_template() — informational, target registration
-    # DR assessment informational categories — gap analysis input, not IaC output
-    'Protected Resources',   # AWS Backup coverage list — compare against full inventory
-    'S3 Versioning',         # Per-bucket versioning status — diagnostic
-    'S3 Lifecycle',          # Per-bucket lifecycle rules — diagnostic
-    'EBS Volumes',           # Volume-to-instance mappings — used by snapshot assessment
-    'FSx Backups',           # FSx backup inventory — input for restore-from-backup
-    'FSx Data Repository Associations',  # Lustre-to-S3 links — diagnostic
+}
+
+# Assessment-only categories — captured for dr_assess.py gap analysis and
+# enrichment of other templates, but do NOT generate their own IaC stacks.
+# These are either backup/snapshot artifacts (inputs to restore, not deploy targets)
+# or diagnostic data about existing configurations.
+ASSESSMENT_ONLY = {
+    # Backup/snapshot artifacts — inputs to restore-from operations
+    'EBS Snapshots',         # Input: snapshot IDs for volume restore
+    'AMIs',                  # Input: AMI IDs for instance launch (copied to DR)
+    'FSx Backups',           # Input: backup IDs for FSx restore
+    'Protected Resources',   # AWS Backup coverage list — gap analysis
+    'EBS Volumes',           # Volume-to-instance mapping — snapshot assessment
+
+    # Per-resource config status — feeds DR gap report, not deployable
+    'S3 Versioning',         # Per-bucket versioning status
+    'S3 Lifecycle',          # Per-bucket lifecycle rules
+    'S3 Replication',        # Per-bucket CRR config (or absence thereof)
+    'FSx Data Repository Associations',  # Lustre-to-S3 links
+
+    # Platform/catalog data captured by auto-templates
+    'List Stacks',           # CloudFormation stacks — we generate new ones, don't clone
+    'List Roles',            # IAM roles — complex trust policies need manual review
+    'List Trails',           # CloudTrail — typically managed by governance tooling
+    'List Work Groups',      # Athena workgroups — default + platform
+    'List Resolver Rules',   # Route53 Resolver — may be default rule only
+    'List Registries',       # EventBridge schema registry
+    'List Instances',        # SSO instances — management plane
+    'Describe Db Clusters',  # DocumentDB/Neptune from auto-template (separate from RDS)
+    'Get Lifecycle Policies', # DLM from auto-template (duplicate of hand-crafted)
 }
 
 
@@ -2425,6 +2448,10 @@ Filter files (optional, placed in the input directory):
 
         # Skip categories handled by bespoke generators (SGs, compute, data, network)
         if category in BESPOKE_HANDLED:
+            continue
+
+        # Skip assessment-only categories (snapshots, backups, diagnostic data)
+        if category in ASSESSMENT_ONLY:
             continue
 
         # Check if we have a CFN type mapping
