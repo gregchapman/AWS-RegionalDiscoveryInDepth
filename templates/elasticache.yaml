@@ -10,7 +10,7 @@ operations:
     id_field: CacheClusterId
     name_field: CacheClusterId
     key_prefix: elasticache
-    dr_note: "Redis/Valkey: use Global Datastore or rebuild. Memcached: rebuild from config."
+    dr_note: "Redis/Valkey: use Global Datastore or rebuild. Memcached: rebuild from config. Engine, AtRestEncryption, TransitEncryption are IMMUTABLE."
     kwargs:
       ShowCacheNodeInfo: true
     config_fields:
@@ -19,11 +19,20 @@ operations:
       - EngineVersion
       - CacheNodeType
       - NumCacheNodes
+      - PreferredAvailabilityZone
       - CacheSubnetGroupName
       - CacheParameterGroup.CacheParameterGroupName
       - SecurityGroups[].SecurityGroupId
       - AtRestEncryptionEnabled
       - TransitEncryptionEnabled
+      - TransitEncryptionMode
+      - NetworkType
+      - IpDiscovery
+      - ReplicationGroupId
+      - SnapshotRetentionLimit
+      - PreferredMaintenanceWindow
+      - AutoMinorVersionUpgrade
+      - LogDeliveryConfigurations
 
   - name: ElastiCache Replication Groups
     method: describe_replication_groups
@@ -32,7 +41,7 @@ operations:
     id_field: ReplicationGroupId
     name_field: Description
     key_prefix: elasticache-rg
-    dr_note: "Replication group config needed to recreate cluster topology in DR."
+    dr_note: "Replication group config needed to recreate cluster topology in DR. ClusterMode, AtRestEncryption, TransitEncryption are IMMUTABLE."
     config_fields:
       - ReplicationGroupId
       - Description
@@ -41,3 +50,15 @@ operations:
       - AutomaticFailover
       - MultiAZ
       - NodeGroups
+      - ClusterEnabled
+      - CacheNodeType
+      - AtRestEncryptionEnabled
+      - TransitEncryptionEnabled
+      - TransitEncryptionMode
+      - KmsKeyId
+      - NetworkType
+      - IpDiscovery
+      - DataTiering
+      - NumNodeGroups
+      - ReplicasPerNodeGroup
+      - SnapshotRetentionLimit

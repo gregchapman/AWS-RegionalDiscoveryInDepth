@@ -26,7 +26,7 @@ operations:
     id_field: VpnConnectionId
     tag_name: true
     key_prefix: vpn
-    dr_note: "VPN tunnels are region-specific. Recreate with same PSK and tunnel options for seamless failover."
+    dr_note: "VPN tunnels are region-specific. Recreate with same PSK and tunnel options for seamless failover. EnableAcceleration and TunnelInsideCidr are IMMUTABLE."
     config_fields:
       - VpnConnectionId
       - State
@@ -35,10 +35,14 @@ operations:
       - VpnGatewayId
       - TransitGatewayId
       - Category
+      - GatewayAssociationState
       - Options.StaticRoutesOnly
       - Options.EnableAcceleration
       - Options.LocalIpv4NetworkCidr
       - Options.RemoteIpv4NetworkCidr
+      - Options.LocalIpv6NetworkCidr
+      - Options.RemoteIpv6NetworkCidr
+      - Options.OutsideIpAddressType
       - Options.TunnelInsideIpVersion
       - Options.TunnelOptions
       - Routes

@@ -10,7 +10,8 @@ operations:
     id_field: Name
     name_field: Name
     key_prefix: s3
-    dr_note: "Bucket data is regional. Enable CRR for buckets needed in DR. Lambda code buckets are critical."
+    dr_note: "Bucket names are globally unique — DR buckets need different names. ObjectLockEnabled is IMMUTABLE (set at create time only). Enable CRR for buckets needed in DR."
     config_fields:
       - Name
       - CreationDate
+      - BucketRegion

@@ -27,3 +27,32 @@ operations:
       - State.Name
       - SecurityGroups[].GroupId
       - Placement.AvailabilityZone
+      - Placement.Tenancy
+      - Placement.GroupName
+      - Placement.HostId
+      - Placement.Affinity
+      - Platform
+      - Architecture
+      - RootDeviceType
+      - RootDeviceName
+      - BlockDeviceMappings
+      - EbsOptimized
+      - EnaSupport
+      - SriovNetSupport
+      - NetworkInterfaces[].NetworkInterfaceId
+      - NetworkInterfaces[].DeviceIndex
+      - NetworkInterfaces[].SubnetId
+      - NetworkInterfaces[].PrivateIpAddress
+      - NetworkInterfaces[].Ipv6Addresses
+      - CpuOptions.CoreCount
+      - CpuOptions.ThreadsPerCore
+      - HibernationOptions.Configured
+      - MetadataOptions.HttpTokens
+      - MetadataOptions.HttpPutResponseHopLimit
+      - MetadataOptions.HttpEndpoint
+      - MetadataOptions.InstanceMetadataTags
+      - EnclaveOptions.Enabled
+      - CreditSpecification.CpuCredits
+      - ElasticGpuAssociations
+      - LicenseSpecifications
+      - CapacityReservationSpecification

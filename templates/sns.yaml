@@ -10,6 +10,21 @@ operations:
     id_field: TopicArn
     name_field: TopicArn
     key_prefix: sns
-    dr_note: "Topic ARNs are region-specific. Subscriptions must be recreated."
+    dr_note: "Topic ARNs are region-specific. Subscriptions must be recreated. FifoTopic is IMMUTABLE."
     config_fields:
       - TopicArn
+    foreach_detail:
+      method: get_topic_attributes
+      kwarg_name: TopicArn
+      parent_field: TopicArn
+      result_key: Attributes
+      config_fields:
+        - TopicArn
+        - TopicName
+        - DisplayName
+        - FifoTopic
+        - ContentBasedDeduplication
+        - KmsMasterKeyId
+        - Policy
+        - SubscriptionsConfirmed
+        - SubscriptionsPending

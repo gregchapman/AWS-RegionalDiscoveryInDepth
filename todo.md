@@ -59,44 +59,58 @@ inventory and produces `dr-gaps.md`:
 The current `iac_blueprint.py` produces generic one-template-per-type output
 that's too thin to be useful and generates noise for assessment-only categories.
 
-**Status: Phase 1 (noise elimination) complete. Phase 2 (tier templates) next.**
+**Status: COMPLETE — Phase 1 (noise elimination) + Phase 2 (tier templates) done.**
 
 **Phase 1 — DONE:**
 - `ASSESSMENT_ONLY` set (18 categories) — EBS Snapshots, AMIs, S3 Versioning,
   DLM Policies, FSx Backups, auto-template catalog data — all silently skipped
 - Clean separation: BESPOKE_HANDLED (10), ASSESSMENT_ONLY (18), NO_CFN (2), CFN_TYPE_MAP (54)
 
-**Phase 2 — Tier-based template generation (next session):**
-Replace generic per-type templates with grouped deployment tiers:
+**Phase 2 — DONE:**
+Full rewrite to tier-based output:
 
 ```
-00-foundation.yaml      VPC, Subnets, Route Tables, DHCP Options
-01-security-groups.yaml All SGs with cross-references (existing bespoke)
-02-data-tier.yaml       RDS + subnet groups + param groups + FSx + restore-from-backup
-03-compute-tier.yaml    EC2 instances grouped by function, AMI params
-03a-dc-compute.yaml     Domain Controllers (separate — boot order critical)
-04-network-tier.yaml    LBs + Listeners + TGs wired with Ref/ImportValue
-05-serverless.yaml      Lambda + EventBridge rules + targets
-06-supporting.yaml      VPC Endpoints, NAT Gateways, KMS keys, ACM certs
-07-dr-protection.yaml   DLM policies, Backup plans, S3 CRR configs
+00-foundation.yaml      VPC, Subnets, Route Tables, DHCP Options, NAT Gateways
+01-security-groups.yaml All SGs with cross-references resolved via Ref
+02-data-tier.yaml       RDS/Aurora + param groups + option groups + FSx (AD-joined)
+03a-dc-compute.yaml     Domain Controllers (boot-order critical, deploy FIRST)
+03-compute-tier.yaml    All other EC2 instances with full config
+04-network-tier.yaml    LBs + Listeners + TGs wired with Ref
+05-serverless.yaml      Lambda + EventBridge rules
+06-supporting.yaml      VPC Endpoints, KMS, ACM, SNS, TGW, VPN, CW
 ```
 
-Each tier template will:
-- Group related resources into one CFN stack with internal `!Ref` wiring
-- Use `!ImportValue` for cross-stack dependencies (SG IDs, VPC ID)
-- Include Name tags for human readability
-- Use YAML parameter files with:
-  - Comments showing source-region values for reference
-  - Empty keys for dynamic values (user fills in at deploy time)
-  - Descriptive text explaining what each param represents
+Each tier template:
+- Groups related resources into one CFN stack with internal wiring
+- Uses `!ImportValue` for cross-stack dependencies (SG IDs, VPC ID)
+- Includes all tags from source for traceability
+- YAML parameter files with comments showing source values
+- Empty keys with REQUIRED markers for DR-specific values
 
-**Reference material:** `C:\RGS-Code\N-Able\dr_template_generator.py` (incomplete
-but shows correct patterns for SG cross-refs, compute AMI params, data tier
-snapshot restore, network tier LB wiring)
+**Phase 3 — DONE: Immutables Enforcement**
+- `cfn_schema_cache.py` fetches and caches CFN Resource Type Schemas
+- `cfn_immutables.py` audits templates against schemas to find gaps
+- `iac_blueprint.py` calls `enforce_immutables()` at param generation time
+- If a `createOnlyProperty` is not in inventory, it's forced into the
+  parameter file with `⚠ IMMUTABLE` warnings
+- `discover.py` pipeline builds schema cache before IaC generation (Step 5)
+- Graceful degradation: works without cache, just skips enforcement
 
-**Key principle:** Don't put dynamic values (VPC IDs, subnet IDs) as defaults
-in param files. Leave them empty with a comment showing what the source value
-was. The operator supplies the DR value at deploy time.
+**Immutable Properties Added to Discovery Templates:**
+- EC2: Tenancy, PlacementGroup, HostId, BlockDeviceMappings, CpuOptions,
+  MetadataOptions, CreditSpecification, NetworkInterfaces, HibernationOptions
+- RDS: CharacterSetName, NcharCharacterSetName, LicenseModel, NetworkType,
+  Iops, StorageThroughput, AvailabilityZone, DedicatedLogVolume
+- RDS Clusters: GlobalClusterIdentifier, ServerlessV2ScalingConfiguration, NetworkType
+- FSx: FileSystemTypeVersion, Lustre PerUnitStorageThroughput/DriveCacheType,
+  ONTAP HAPairs, OpenZFS section
+- ELBv2 TGs: ProtocolVersion, IpAddressType, HealthCheckTimeoutSeconds
+- KMS: KeySpec, KeyUsage, MultiRegion, Origin (via describe_key foreach)
+- VPC: InstanceTenancy, Ipv6CidrBlockAssociationSet, CidrBlockAssociationSet
+- Subnets: Ipv6Native, AssignIpv6AddressOnCreation, AvailabilityZoneId
+- ElastiCache: TransitEncryptionMode, NetworkType, ClusterEnabled, DataTiering
+- SNS: FifoTopic, ContentBasedDeduplication (via get_topic_attributes foreach)
+- VPN: EnableAcceleration, OutsideIpAddressType, IPv6 CIDRs
 
 ### Remediation IaC Generator
 

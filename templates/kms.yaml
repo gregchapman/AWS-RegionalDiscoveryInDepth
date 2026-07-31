@@ -10,7 +10,27 @@ operations:
     id_field: KeyId
     name_field: KeyId
     key_prefix: kms
-    dr_note: "KMS keys are region-specific. Create equivalent keys in DR with same aliases."
+    dr_note: "KMS keys are region-specific. KeySpec, KeyUsage, and MultiRegion are IMMUTABLE. Create equivalent keys in DR with same aliases."
     config_fields:
       - KeyId
       - KeyArn
+    foreach_detail:
+      method: describe_key
+      kwarg_name: KeyId
+      parent_field: KeyId
+      result_key: KeyMetadata
+      config_fields:
+        - KeyId
+        - Arn
+        - Description
+        - KeyUsage
+        - KeyState
+        - KeySpec
+        - MultiRegion
+        - MultiRegionConfiguration
+        - CustomerMasterKeySpec
+        - Origin
+        - KeyManager
+        - CreationDate
+        - Enabled
+        - ExpirationModel

@@ -10,13 +10,17 @@ operations:
     id_field: VpcId
     tag_name: true
     key_prefix: vpc
-    dr_note: "CIDR must not overlap with primary if VPC peering is used."
+    dr_note: "CIDR must not overlap with primary if VPC peering is used. CidrBlock and Ipv6CidrBlock are IMMUTABLE."
     config_fields:
       - VpcId
       - CidrBlock
+      - CidrBlockAssociationSet
+      - Ipv6CidrBlockAssociationSet
       - DhcpOptionsId
+      - InstanceTenancy
       - IsDefault
       - State
+      - OwnerId
 
   - name: Subnets
     method: describe_subnets
@@ -25,13 +29,19 @@ operations:
     id_field: SubnetId
     tag_name: true
     key_prefix: subnet
-    dr_note: "Subnet IDs change in DR. AZ mapping may differ."
+    dr_note: "Subnet IDs change in DR. AZ mapping may differ. CidrBlock and AvailabilityZone are IMMUTABLE."
     config_fields:
       - SubnetId
       - VpcId
       - CidrBlock
+      - Ipv6CidrBlockAssociationSet
       - AvailabilityZone
+      - AvailabilityZoneId
       - MapPublicIpOnLaunch
+      - AssignIpv6AddressOnCreation
+      - Ipv6Native
+      - EnableDns64
+      - PrivateDnsNameOptionsOnLaunch
 
   - name: Route Tables
     method: describe_route_tables

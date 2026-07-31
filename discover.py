@@ -285,7 +285,22 @@ Examples:
                 errors.append("Graph discovery failed; "
                               "inventory files are still available")
 
-    # ── Step 5: IaC Blueprint Generation ──
+    # ── Step 5: CFN Schema Cache (for immutables enforcement) ──
+    schema_cache_marker = os.path.expanduser(f'~/.cfn-schemas/{region}')
+    if os.path.isdir(schema_cache_marker) and len(os.listdir(schema_cache_marker)) > 10:
+        print(f"\n  ⏭  Schema Cache: already populated ({len(os.listdir(schema_cache_marker))} types), skipping")
+    else:
+        ok = run_step('CFN Schema Cache', [
+            sys.executable,
+            os.path.join(SCRIPT_DIR, 'cfn_schema_cache.py'),
+            '--region', region,
+        ], errors)
+        if not ok:
+            errors.append("CFN schema cache build failed; "
+                          "IaC templates will generate without immutables enforcement")
+            print("  ⚠  Continuing without schema cache (immutables not enforced)")
+
+    # ── Step 6: IaC Blueprint Generation ──
     if step_completed(run_dir, 'iac-blueprint'):
         print(f"\n  ⏭  IaC Blueprint: already completed, skipping")
     else:
@@ -305,7 +320,7 @@ Examples:
                               "inventory and architecture docs are still available")
                 print("  ⚠  Continuing without IaC templates")
 
-    # ── Step 6: DR Readiness Assessment ──
+    # ── Step 7: DR Readiness Assessment ──
     if step_completed(run_dir, 'dr-assess'):
         print(f"\n  ⏭  DR Assessment: already completed, skipping")
     else:

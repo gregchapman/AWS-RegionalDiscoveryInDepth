@@ -19,6 +19,7 @@ operations:
     config_fields:
       - FileSystemId
       - FileSystemType
+      - FileSystemTypeVersion
       - Lifecycle
       - StorageCapacity
       - StorageType
@@ -40,14 +41,24 @@ operations:
       - WindowsConfiguration.WeeklyMaintenanceStartTime
       - WindowsConfiguration.CopyTagsToBackups
       - WindowsConfiguration.AuditLogConfiguration
+      - WindowsConfiguration.Aliases
       # Lustre-specific (null for other types)
       - LustreConfiguration.DeploymentType
+      - LustreConfiguration.PerUnitStorageThroughput
+      - LustreConfiguration.DataCompressionType
       - LustreConfiguration.DataRepositoryConfiguration
       - LustreConfiguration.WeeklyMaintenanceStartTime
+      - LustreConfiguration.DriveCacheType
       # ONTAP-specific (null for other types)
       - OntapConfiguration.DeploymentType
       - OntapConfiguration.EndpointIpAddressRange
       - OntapConfiguration.ThroughputCapacity
+      - OntapConfiguration.HAPairs
+      - OntapConfiguration.ThroughputCapacityPerHAPair
+      # OpenZFS-specific (null for other types)
+      - OpenZFSConfiguration.DeploymentType
+      - OpenZFSConfiguration.ThroughputCapacity
+      - OpenZFSConfiguration.RootVolumeId
 
   - name: FSx Backups
     method: describe_backups

@@ -10,7 +10,7 @@ operations:
     id_field: LoadBalancerArn
     name_field: LoadBalancerName
     key_prefix: elb
-    dr_note: "ACM certs are region-specific. Target instance IDs will differ."
+    dr_note: "ACM certs are region-specific. Target instance IDs will differ. Type and Scheme are IMMUTABLE."
     config_fields:
       - LoadBalancerName
       - LoadBalancerArn
@@ -21,6 +21,8 @@ operations:
       - SecurityGroups
       - State.Code
       - IpAddressType
+      - CustomerOwnedIpv4Pool
+      - EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic
 
   - name: Target Groups
     method: describe_target_groups
@@ -29,23 +31,28 @@ operations:
     id_field: TargetGroupArn
     name_field: TargetGroupName
     key_prefix: tg
-    dr_note: "Target IDs (instance IDs) will differ in DR."
+    dr_note: "Target IDs (instance IDs) will differ in DR. TargetType, Protocol, Port, ProtocolVersion, IpAddressType are IMMUTABLE — get them wrong and you must delete/recreate."
     config_fields:
       - TargetGroupName
       - TargetGroupArn
       - Protocol
+      - ProtocolVersion
       - Port
       - VpcId
       - TargetType
+      - IpAddressType
       - HealthCheckProtocol
       - HealthCheckPort
       - HealthCheckPath
       - HealthCheckIntervalSeconds
+      - HealthCheckTimeoutSeconds
       - HealthCheckEnabled
       - HealthyThresholdCount
       - UnhealthyThresholdCount
       - Matcher.HttpCode
+      - Matcher.GrpcCode
       - LoadBalancerArns
+      - TargetGroupStickinessConfig
 
   # ── Chained: Listeners per Load Balancer ──
   - name: Listeners

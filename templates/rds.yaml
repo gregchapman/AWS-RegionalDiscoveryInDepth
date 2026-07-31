@@ -39,6 +39,11 @@ operations:
       - AllocatedStorage
       - StorageType
       - Status
+      - GlobalClusterIdentifier
+      - ReplicationSourceIdentifier
+      - ServerlessV2ScalingConfiguration
+      - NetworkType
+      - IOOptimizedNextAllowedModificationTime
 
   - name: RDS Instances
     method: describe_db_instances
@@ -78,6 +83,17 @@ operations:
       - PerformanceInsightsEnabled
       - ReadReplicaSourceDBInstanceIdentifier
       - ReadReplicaDBInstanceIdentifiers
+      - CharacterSetName
+      - NcharCharacterSetName
+      - LicenseModel
+      - Iops
+      - StorageThroughput
+      - DBName
+      - AvailabilityZone
+      - NetworkType
+      - CACertificateIdentifier
+      - DedicatedLogVolume
+      - CustomIamInstanceProfile
 
   - name: RDS DB Subnet Groups
     method: describe_db_subnet_groups

@@ -19,8 +19,10 @@ Five scripts, one orchestrator:
 | `auto_template.py` | Generate discovery schemas for found services | ~30s |
 | `deep_discover.py` | Detailed inventory using all templates | ~60s |
 | `graph_discover.py` | Audience-driven architecture views + draw.io diagram | ~10s |
-| `iac_blueprint.py` | CloudFormation templates from inventory | ~15s |
+| `cfn_schema_cache.py` | Cache CFN type schemas for immutables enforcement | ~60s |
+| `iac_blueprint.py` | Tier-based CloudFormation templates from inventory | ~15s |
 | `dr_assess.py` | DR readiness gap analysis from inventory | ~5s |
+| `cfn_immutables.py` | Audit tool — find uncaptured immutable properties | dev use |
 | **`discover.py`** | **Orchestrator — runs the full pipeline with resume** | — |
 
 ## Quick Start
