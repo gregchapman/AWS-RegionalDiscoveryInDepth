@@ -545,10 +545,11 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
     t['Resources'] = OrderedDict()
     t['Outputs'] = OrderedDict()
 
-    # Shared IAM role for SSM
+    # Shared IAM role for SSM (fallback if source instance profile unavailable)
     t['Resources']['EC2SSMRole'] = {
         'Type': 'AWS::IAM::Role',
         'Properties': OrderedDict([
+            ('RoleName', {'Fn::Sub': '${AWS::StackName}-ssm-role'}),
             ('AssumeRolePolicyDocument', {
                 'Version': '2012-10-17',
                 'Statement': [{
@@ -562,6 +563,10 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
             ]),
         ]),
     }
+    t['Resources']['EC2SSMProfile'] = {
+        'Type': 'AWS::IAM::InstanceProfile',
+        'Properties': {'Roles': [{'Ref': 'EC2SSMRole'}]},
+    }
 
     for inst in resources:
         config = inst.config
@@ -569,12 +574,23 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         logical = safe_logical_id(name)
         subnet_id = _get_subnet_id(config)
 
-        # Instance profile
-        profile_logical = f'{logical}Profile'
-        t['Resources'][profile_logical] = {
-            'Type': 'AWS::IAM::InstanceProfile',
-            'Properties': {'Roles': [{'Ref': 'EC2SSMRole'}]},
-        }
+        # Source instance profile ARN (if captured)
+        source_profile_arn = config.get('Arn', '')
+        if source_profile_arn and 'instance-profile/' in str(source_profile_arn):
+            # Extract readable name from ARN for parameter description
+            profile_name = source_profile_arn.split('instance-profile/')[-1]
+            param_name = f'{logical}InstanceProfile'
+            t['Parameters'][param_name] = {
+                'Type': 'String',
+                'Default': source_profile_arn,
+                'Description': (
+                    f'Instance profile for {name} (source: {profile_name}). '
+                    f'Must include AmazonSSMManagedInstanceCore.'),
+            }
+            profile_ref = {'Ref': param_name}
+        else:
+            # No source profile — use our SSM-only fallback
+            profile_ref = {'Ref': 'EC2SSMProfile'}
 
         # Map SGs to ImportValue from SG stack
         sg_refs = []
@@ -586,7 +602,7 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         props = OrderedDict()
         props['ImageId'] = {'Ref': f'{logical}AmiId'}
         props['InstanceType'] = config.get('InstanceType', 't3.medium')
-        props['IamInstanceProfile'] = {'Ref': profile_logical}
+        props['IamInstanceProfile'] = profile_ref
         if config.get('KeyName'):
             props['KeyName'] = config['KeyName']
         if subnet_id and subnet_id in subnet_param_map:
