@@ -98,19 +98,12 @@ print("\n✓ All assertions passed. dependency_graph.py is working.")
 from schema_template_generator import generate_group_template
 
 compute_group = plan.group_by_name('compute')
-template, param_values, param_comments = generate_group_template(
-    group_name='compute',
-    resources=compute_group.resources,
-    region='us-gov-west-1',
-    cross_stack_ids={'vpc-abc123', 'subnet-001', 'sg-001'},
-    schemas={},  # no schemas in test
-    description='DR Compute Tier',
-    depends_on_stacks=['foundation', 'security'],
-)
+template, sg_map = generate_group_template(
+    compute_group, fake_inventory, {})
 
 assert template['AWSTemplateFormatVersion'] == '2010-09-09'
 assert 'AppServer1' in template['Resources']
-assert 'foundationStack' in template['Parameters'] or 'securityStack' in template['Parameters']
+assert 'SGStack' in template['Parameters']
 print("\n✓ generate_group_template integration works.")
 
 # ── Test full orchestrator ──
@@ -129,32 +122,35 @@ run_graph_driven(fake_inventory, os.path.join(tmpdir, 'iac-templates'),
                  'us-gov-west-1')
 
 # Verify output files exist
-import os
 iac_dir = os.path.join(tmpdir, 'iac-templates')
 templates_dir = os.path.join(iac_dir, 'templates')
-params_dir = os.path.join(iac_dir, 'params')
 assert os.path.isdir(templates_dir), "templates/ dir should exist"
-assert os.path.isdir(params_dir), "params/ dir should exist"
 assert os.path.isfile(os.path.join(iac_dir, 'DEPLOY.md')), "DEPLOY.md missing"
 
 # Check that template files were created
 import glob as _glob
 templates = _glob.glob(os.path.join(templates_dir, '*.yaml'))
-params = _glob.glob(os.path.join(params_dir, '*.yaml'))
 print(f"\nTemplates generated: {len(templates)}")
 for t in sorted(templates):
     print(f"  {os.path.basename(t)}")
-print(f"Param files: {len(params)}")
 
 assert len(templates) >= 4, f"Expected 4+ templates, got {len(templates)}"
-assert len(params) >= 4, f"Expected 4+ param files, got {len(params)}"
 
-# Verify SG template uses bespoke handler (has SecurityGroupIngress pattern)
+# Verify SG template uses bespoke handler
 sg_templates = [t for t in templates if 'security' in os.path.basename(t)]
 assert len(sg_templates) > 0, "Security group template should exist"
 with open(sg_templates[0]) as f:
     sg_content = f.read()
-assert 'SecurityGroupIngress' in sg_content or 'GroupDescription' in sg_content
+assert 'GroupDescription' in sg_content
+
+# Verify compute template has proper structure
+compute_templates = [t for t in templates if 'compute' in os.path.basename(t) and 'dc' not in os.path.basename(t)]
+if compute_templates:
+    with open(compute_templates[0]) as f:
+        compute_content = f.read()
+    assert 'SGStack' in compute_content, "Compute should ref SGStack"
+    assert 'EC2SSMRole' in compute_content, "Compute should have SSM role"
+    assert 'AWS::EC2::Image::Id' in compute_content, "AMI param should be typed"
 
 print("\n✓ Full orchestrator (iac_blueprint.py v3) works end-to-end.")
 
