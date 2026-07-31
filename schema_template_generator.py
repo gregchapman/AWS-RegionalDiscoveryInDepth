@@ -189,15 +189,23 @@ def generate_foundation(resources, inventory):
         dc = dhcp.config
         logical = f'DHCPOptions{idx}'
 
+        # Parse DhcpConfigurations list into flat key->values map
+        dhcp_map = {}
+        for entry in dc.get('DhcpConfigurations', []):
+            key = entry.get('Key', '')
+            values = [v.get('Value', '') for v in entry.get('Values', [])]
+            if key and values:
+                dhcp_map[key] = values
+
         props = OrderedDict()
-        if dc.get('domain-name'):
-            props['DomainName'] = dc['domain-name']
-        if dc.get('domain-name-servers'):
-            props['DomainNameServers'] = dc['domain-name-servers']
-        if dc.get('ntp-servers'):
-            props['NtpServers'] = dc['ntp-servers']
-        if dc.get('netbios-name-servers'):
-            props['NetbiosNameServers'] = dc['netbios-name-servers']
+        if dhcp_map.get('domain-name'):
+            props['DomainName'] = dhcp_map['domain-name'][0]
+        if dhcp_map.get('domain-name-servers'):
+            props['DomainNameServers'] = dhcp_map['domain-name-servers']
+        if dhcp_map.get('ntp-servers'):
+            props['NtpServers'] = dhcp_map['ntp-servers']
+        if dhcp_map.get('netbios-name-servers'):
+            props['NetbiosNameServers'] = dhcp_map['netbios-name-servers']
         props['Tags'] = [
             {'Key': 'Name', 'Value': f'DR-DHCP-{idx}'},
             {'Key': 'WARNING', 'Value': 'DNS IPs must point to DR DCs after boot'},
@@ -392,7 +400,7 @@ def generate_security_groups(resources, inventory):
         ingress_rules = []
         self_ref_rules = []
 
-        for rule in config.get('IngressRules', []):
+        for rule in config.get('IpPermissions', config.get('IngressRules', [])):
             ip_protocol = rule.get('IpProtocol', '-1')
             from_port = rule.get('FromPort')
             to_port = rule.get('ToPort')
@@ -1321,7 +1329,12 @@ def generate_supporting(resources, inventory, sg_id_to_logical):
     # ── SNS Topics ──
     for topic in sns_topics:
         tc = topic.config
-        topic_name = tc.get('TopicName', 'unnamed')
+        # TopicName may not be in config — parse from ARN
+        topic_arn = tc.get('TopicArn', '')
+        topic_name = tc.get('TopicName', '')
+        if not topic_name and ':' in topic_arn:
+            topic_name = topic_arn.split(':')[-1]
+        topic_name = topic_name or topic.name or 'unnamed'
         logical = safe_logical_id(topic_name)
         t['Resources'][logical] = {
             'Type': 'AWS::SNS::Topic',
