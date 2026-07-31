@@ -1,5 +1,8 @@
 #!/bin/bash
 cd /home/greg/AWS-RegionalDiscoveryInDepth-repo
-python3 iac_blueprint.py --input output/OAG-CS-FS/us-east-1/20260505-162759/ > /tmp/iac_run.log 2>&1
-echo "EXIT_CODE=$?"
-tail -30 /tmp/iac_run.log
+INV="output/Instem/us-gov-west-1/20260731-170202"
+rm -rf "$INV/iac-templates"
+python3 iac_blueprint.py --input "$INV" 2>&1 | tail -25
+echo "---"
+echo "Templates:"
+ls "$INV/iac-templates/templates/" 2>/dev/null

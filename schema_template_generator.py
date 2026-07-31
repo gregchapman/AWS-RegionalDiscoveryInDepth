@@ -51,13 +51,13 @@ def short_name(full_name: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def generate_foundation(resources, inventory):
-    """Generate foundation template: VPC, Subnets, Route Tables, DHCP, NAT GWs.
+    """Generate foundation template: VPC, Subnets, Route Tables, DHCP, NAT GWs, IGW.
 
     Args:
         resources: list of ResourceNode for this group
         inventory: full inventory dict (for metadata)
     Returns:
-        (template_dict, description)
+        template_dict
     """
     # Separate by category
     vpcs = [r for r in resources if r.category == 'VPCs']
@@ -108,33 +108,69 @@ def generate_foundation(resources, inventory):
             'Export': {'Name': {'Fn::Sub': '${AWS::StackName}-VpcCidr'}},
         }
 
-    # ── Subnets ──
+    # ── Internet Gateway ──
+    t['Resources']['InternetGateway'] = {
+        'Type': 'AWS::EC2::InternetGateway',
+        'Properties': {'Tags': [{'Key': 'Name', 'Value': 'DR-IGW'}]},
+    }
+    t['Resources']['IGWAttachment'] = {
+        'Type': 'AWS::EC2::VPCGatewayAttachment',
+        'Properties': {
+            'VpcId': {'Ref': 'VPC'},
+            'InternetGatewayId': {'Ref': 'InternetGateway'},
+        },
+    }
+
+    # ── Subnets (with AZ-aware unique labels) ──
     subnets.sort(key=lambda s: (
         s.config.get('AvailabilityZone', ''),
         s.config.get('CidrBlock', '')
     ))
+
+    # Build unique logical IDs: if a base name appears in multiple AZs,
+    # append the AZ suffix to disambiguate
+    subnet_logical_map = {}  # subnet resource_id -> logical_id
+    base_name_count = {}
+    for sub in subnets:
+        base = _subnet_base_label(sub)
+        base_name_count[base] = base_name_count.get(base, 0) + 1
+
     for sub in subnets:
         sc = sub.config
-        label = _subnet_label(sub)
+        base = _subnet_base_label(sub)
+        az = sc.get('AvailabilityZone', '')
+        az_suffix = az[-1].upper() if az else ''
+
+        # Disambiguate duplicates with AZ suffix
+        if base_name_count.get(base, 1) > 1:
+            label = f'{base}{az_suffix}'
+        else:
+            label = base
+
         logical = safe_logical_id(label)
+        subnet_logical_map[sc.get('SubnetId', sub.resource_id)] = logical
 
         param_name = f'{logical}Cidr'
         t['Parameters'][param_name] = {
             'Type': 'String',
             'Default': sc.get('CidrBlock', ''),
-            'Description': f'CIDR for {label} (source AZ: {sc.get("AvailabilityZone", "")})',
+            'Description': f'CIDR for {label} (source: {sc.get("SubnetId", "")} in {az})',
         }
 
-        az = sc.get('AvailabilityZone', '')
-        az_suffix = az[-1] if az else 'a'
+        # Map AZ suffix to index
+        az_index = 0
+        if az_suffix == 'B':
+            az_index = 1
+        elif az_suffix == 'C':
+            az_index = 2
+
         t['Resources'][logical] = {
             'Type': 'AWS::EC2::Subnet',
             'Properties': OrderedDict([
                 ('VpcId', {'Ref': 'VPC'}),
                 ('CidrBlock', {'Ref': param_name}),
                 ('AvailabilityZone', {'Fn::Select': [
-                    0 if az_suffix in ('a', 'c') else 1,
-                    {'Fn::GetAZs': {'Ref': 'AWS::Region'}}
+                    az_index, {'Fn::GetAZs': {'Ref': 'AWS::Region'}}
                 ]}),
                 ('MapPublicIpOnLaunch', sc.get('MapPublicIpOnLaunch', False)),
                 ('Tags', [
@@ -148,6 +184,119 @@ def generate_foundation(resources, inventory):
             'Export': {'Name': {'Fn::Sub': f'${{AWS::StackName}}-{logical}'}},
         }
 
+    # ── DHCP Options ──
+    for idx, dhcp in enumerate(dhcp_opts, 1):
+        dc = dhcp.config
+        logical = f'DHCPOptions{idx}'
+
+        props = OrderedDict()
+        if dc.get('domain-name'):
+            props['DomainName'] = dc['domain-name']
+        if dc.get('domain-name-servers'):
+            props['DomainNameServers'] = dc['domain-name-servers']
+        if dc.get('ntp-servers'):
+            props['NtpServers'] = dc['ntp-servers']
+        if dc.get('netbios-name-servers'):
+            props['NetbiosNameServers'] = dc['netbios-name-servers']
+        props['Tags'] = [
+            {'Key': 'Name', 'Value': f'DR-DHCP-{idx}'},
+            {'Key': 'WARNING', 'Value': 'DNS IPs must point to DR DCs after boot'},
+            {'Key': 'SourceDhcpOptionsId', 'Value': dc.get('DhcpOptionsId', '')},
+        ]
+        t['Resources'][logical] = {
+            'Type': 'AWS::EC2::DHCPOptions',
+            'Properties': props,
+        }
+        t['Resources'][f'{logical}Assoc'] = {
+            'Type': 'AWS::EC2::VPCDHCPOptionsAssociation',
+            'Properties': {
+                'VpcId': {'Ref': 'VPC'},
+                'DhcpOptionsId': {'Ref': logical},
+            },
+        }
+
+    # ── Route Tables ──
+    for rt in route_tables:
+        rc = rt.config
+        rt_id = rc.get('RouteTableId', rt.resource_id)
+        rt_name = rt.name or rt_id
+        logical = safe_logical_id(rt_name)
+
+        t['Resources'][logical] = {
+            'Type': 'AWS::EC2::RouteTable',
+            'Properties': OrderedDict([
+                ('VpcId', {'Ref': 'VPC'}),
+                ('Tags', [
+                    {'Key': 'Name', 'Value': f'DR-{rt_name}'},
+                    {'Key': 'SourceRouteTableId', 'Value': rt_id},
+                ]),
+            ]),
+        }
+
+        # Add routes (parameterize gateway references)
+        routes = rc.get('Routes', [])
+        for r_idx, route in enumerate(routes):
+            dest = route.get('DestinationCidrBlock', '')
+            gw = route.get('GatewayId', '')
+            nat = route.get('NatGatewayId', '')
+            tgw = route.get('TransitGatewayId', '')
+            state = route.get('State', 'active')
+
+            # Skip the default local route (VPC CIDR → local)
+            if gw == 'local' or state != 'active':
+                continue
+
+            route_logical = f'{logical}Route{r_idx}'
+            route_props = OrderedDict()
+            route_props['RouteTableId'] = {'Ref': logical}
+            route_props['DestinationCidrBlock'] = dest
+
+            if gw and gw.startswith('igw-'):
+                route_props['GatewayId'] = {'Ref': 'InternetGateway'}
+            elif nat:
+                # Find matching NAT GW by source ID
+                nat_ref = nat  # fallback to source ID
+                for n_idx, n in enumerate(nat_gws, 1):
+                    if n.config.get('NatGatewayId') == nat:
+                        nat_ref = {'Ref': f'NatGW{n_idx}'}
+                        break
+                route_props['NatGatewayId'] = nat_ref
+            elif tgw:
+                # TGW routes reference connectivity stack — parameterize
+                tgw_param = f'{logical}TgwId'
+                if tgw_param not in t['Parameters']:
+                    t['Parameters'][tgw_param] = {
+                        'Type': 'String',
+                        'Default': tgw,
+                        'Description': f'Transit Gateway ID for route in {rt_name} (source: {tgw})',
+                    }
+                route_props['TransitGatewayId'] = {'Ref': tgw_param}
+            else:
+                continue  # Skip routes we can't resolve
+
+            t['Resources'][route_logical] = {
+                'Type': 'AWS::EC2::Route',
+                'Properties': route_props,
+            }
+
+        # Subnet associations
+        associations = rc.get('Associations', [])
+        for a_idx, assoc in enumerate(associations):
+            subnet_id = assoc.get('SubnetId', '')
+            if not subnet_id or assoc.get('Main', False):
+                continue  # Skip main route table association
+            # Find the logical name for this subnet
+            subnet_logical = subnet_logical_map.get(subnet_id)
+            if subnet_logical:
+                assoc_logical = f'{logical}Assoc{a_idx}'
+                t['Resources'][assoc_logical] = {
+                    'Type': 'AWS::EC2::SubnetRouteTableAssociation',
+                    'Properties': {
+                        'RouteTableId': {'Ref': logical},
+                        'SubnetId': {'Ref': subnet_logical},
+                    },
+                }
+
     # ── NAT Gateways ──
     for idx, nat in enumerate(nat_gws, 1):
         nc = nat.config
@@ -157,10 +306,9 @@ def generate_foundation(resources, inventory):
 
         # Find matching subnet
         subnet_ref = {'Ref': 'VPC'}  # fallback
-        for sub in subnets:
-            if sub.config.get('SubnetId') == source_subnet:
-                subnet_ref = {'Ref': safe_logical_id(_subnet_label(sub))}
-                break
+        subnet_logical = subnet_logical_map.get(source_subnet)
+        if subnet_logical:
+            subnet_ref = {'Ref': subnet_logical}
 
         t['Resources'][eip_logical] = {
             'Type': 'AWS::EC2::EIP',
@@ -181,13 +329,13 @@ def generate_foundation(resources, inventory):
     return t
 
 
-def _subnet_label(sub) -> str:
-    """Get human-readable label for a subnet."""
+def _subnet_base_label(sub) -> str:
+    """Get base label for a subnet (without AZ suffix)."""
     tags = sub.config.get('Tags', {})
-    name = tags.get('Name', '')
     cdk_name = tags.get('aws-cdk:subnet-name', '')
     if cdk_name:
         return cdk_name
+    name = tags.get('Name', '')
     if '/' in name:
         return name.split('/')[-1]
     return name or sub.resource_id or 'unnamed'
@@ -344,9 +492,14 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
     for sub in all_subnets:
         sid = sub.get('config', {}).get('SubnetId', '')
         tags = sub.get('config', {}).get('Tags', {})
-        label = tags.get('Name', '') or tags.get('aws-cdk:subnet-name', '') or sid
-        if '/' in label:
-            label = label.split('/')[-1]
+        cdk = tags.get('aws-cdk:subnet-name', '')
+        name = tags.get('Name', '')
+        az = sub.get('config', {}).get('AvailabilityZone', '')
+        az_suffix = az[-1].upper() if az else ''
+        label = cdk or (name.split('/')[-1] if '/' in name else name) or sid
+        # Include AZ suffix for clarity
+        if az_suffix:
+            label = f'{label}-{az_suffix}'
         subnet_id_to_label[sid] = label
 
     t = OrderedDict()
@@ -360,14 +513,14 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         'Description': 'Name of the security groups stack',
     }
 
-    # Collect unique subnets used
+    # Collect unique subnets used (handle both field name variants)
     subnet_ids_used = set()
     for inst in resources:
-        sid = inst.config.get('SubnetId', '')
+        sid = _get_subnet_id(inst.config)
         if sid:
             subnet_ids_used.add(sid)
 
-    # Subnet parameters
+    # Subnet parameters — one per unique subnet
     subnet_param_map = {}
     for idx, sid in enumerate(sorted(subnet_ids_used), 1):
         label = subnet_id_to_label.get(sid, f'Subnet{idx}')
@@ -414,7 +567,7 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         config = inst.config
         name = short_name(inst.name)
         logical = safe_logical_id(name)
-        subnet_id = config.get('SubnetId', '')
+        subnet_id = _get_subnet_id(config)
 
         # Instance profile
         profile_logical = f'{logical}Profile'
@@ -436,7 +589,7 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         props['IamInstanceProfile'] = {'Ref': profile_logical}
         if config.get('KeyName'):
             props['KeyName'] = config['KeyName']
-        if subnet_id in subnet_param_map:
+        if subnet_id and subnet_id in subnet_param_map:
             props['SubnetId'] = {'Ref': subnet_param_map[subnet_id]}
         if sg_refs:
             props['SecurityGroupIds'] = sg_refs
@@ -467,6 +620,23 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         }
 
     return t
+
+
+def _get_subnet_id(config: dict) -> str:
+    """Extract subnet ID from EC2 config, handling collision-safe key variants."""
+    # Try standard field first
+    sid = config.get('SubnetId', '')
+    if sid and isinstance(sid, str) and sid.startswith('subnet-'):
+        return sid
+    # Try collision-safe variant from discovery engine
+    sid = config.get('SubnetId_SubnetId', '')
+    if sid and isinstance(sid, str) and sid.startswith('subnet-'):
+        return sid
+    # Try Placement.SubnetId stored flat
+    sid = config.get('Placement_SubnetId', '')
+    if sid and isinstance(sid, str) and sid.startswith('subnet-'):
+        return sid
+    return ''
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -516,6 +686,27 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
         'Description': 'KMS key ARN in DR region for encryption',
     }
 
+    # FSx AD params (if FSx Windows exists with domain config)
+    fsx_with_ad = [f for f in fsx_systems
+                   if f.config.get('DomainName') or f.config.get('UserName')]
+    if fsx_with_ad:
+        t['Parameters']['FSxADDnsIps'] = {
+            'Type': 'CommaDelimitedList',
+            'Description': (
+                'DNS IPs for AD domain in DR (DC private IPs). '
+                f'Source: {fsx_with_ad[0].config.get("DnsIps", [])}'),
+        }
+        t['Parameters']['FSxADUsername'] = {
+            'Type': 'String',
+            'Default': fsx_with_ad[0].config.get('UserName', ''),
+            'Description': 'Service account username for FSx AD join',
+        }
+        t['Parameters']['FSxADPassword'] = {
+            'Type': 'String',
+            'NoEcho': True,
+            'Description': 'Service account password for FSx AD join',
+        }
+
     t['Resources'] = OrderedDict()
     t['Outputs'] = OrderedDict()
 
@@ -544,6 +735,44 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
             ]),
         }
 
+    # ── RDS Cluster Parameter Groups (custom only) ──
+    for cpg in rds_cluster_pg:
+        pc = cpg.config
+        cpg_name = pc.get('DBClusterParameterGroupName', '')
+        if cpg_name.startswith('default.'):
+            continue
+        logical = safe_logical_id(cpg_name)
+        t['Resources'][logical] = {
+            'Type': 'AWS::RDS::DBClusterParameterGroup',
+            'Properties': OrderedDict([
+                ('Family', pc.get('DBParameterGroupFamily', '')),
+                ('Description', pc.get('Description', f'DR copy of {cpg_name}')),
+            ]),
+        }
+
+    # ── RDS Option Groups (custom only) ──
+    for og in rds_option_groups:
+        oc = og.config
+        og_name = oc.get('OptionGroupName', '')
+        if og_name.startswith('default:'):
+            continue
+        logical = safe_logical_id(og_name)
+        props = OrderedDict([
+            ('EngineName', oc.get('EngineName', '')),
+            ('MajorEngineVersion', str(oc.get('MajorEngineVersion', ''))),
+            ('OptionGroupDescription', oc.get('OptionGroupDescription', f'DR copy of {og_name}')),
+        ])
+        # Include option configurations if captured
+        option_names = oc.get('OptionName', [])
+        if option_names and isinstance(option_names, list):
+            props['OptionConfigurations'] = [
+                {'OptionName': name} for name in option_names
+            ]
+        t['Resources'][logical] = {
+            'Type': 'AWS::RDS::OptionGroup',
+            'Properties': props,
+        }
+
     # ── Aurora Clusters ──
     for cluster in rds_clusters:
         cc = cluster.config
@@ -562,21 +791,23 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
                 sg_refs.append({'Fn::ImportValue': {
                     'Fn::Sub': f'${{SGStack}}-{sg_id_to_logical[sg_id]}'}})
 
+        cluster_props = OrderedDict([
+            ('DBClusterIdentifier', cid),
+            ('Engine', cc.get('Engine', '')),
+            ('EngineVersion', cc.get('EngineVersion', '')),
+            ('Port', cc.get('Port', 5432)),
+            ('SnapshotIdentifier', {'Ref': snap_param}),
+            ('DBSubnetGroupName', {'Ref': 'DBSubnetGroup'}),
+            ('VpcSecurityGroupIds', sg_refs or []),
+            ('StorageEncrypted', cc.get('StorageEncrypted', True)),
+            ('KmsKeyId', {'Ref': 'KmsKeyArn'}),
+            ('DeletionProtection', cc.get('DeletionProtection', True)),
+            ('BackupRetentionPeriod', cc.get('BackupRetentionPeriod', 7)),
+        ])
+
         t['Resources'][logical] = {
             'Type': 'AWS::RDS::DBCluster',
-            'Properties': OrderedDict([
-                ('DBClusterIdentifier', cid),
-                ('Engine', cc.get('Engine', '')),
-                ('EngineVersion', cc.get('EngineVersion', '')),
-                ('Port', cc.get('Port', 5432)),
-                ('SnapshotIdentifier', {'Ref': snap_param}),
-                ('DBSubnetGroupName', {'Ref': 'DBSubnetGroup'}),
-                ('VpcSecurityGroupIds', sg_refs or []),
-                ('StorageEncrypted', cc.get('StorageEncrypted', True)),
-                ('KmsKeyId', {'Ref': 'KmsKeyArn'}),
-                ('DeletionProtection', cc.get('DeletionProtection', True)),
-                ('BackupRetentionPeriod', cc.get('BackupRetentionPeriod', 7)),
-            ]),
+            'Properties': cluster_props,
         }
         t['Outputs'][f'{logical}Endpoint'] = {
             'Value': {'Fn::GetAtt': [logical, 'Endpoint.Address']},
@@ -594,8 +825,22 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
         props['DBInstanceIdentifier'] = db_id
         props['DBInstanceClass'] = rc.get('DBInstanceClass', 'db.t3.medium')
         props['Engine'] = rc.get('Engine', '')
+        props['EngineVersion'] = rc.get('EngineVersion', '')
 
-        if cluster_id:
+        # IMMUTABLE: CharacterSetName (Oracle)
+        charset = rc.get('CharacterSetName', '')
+        if charset and charset != '':
+            props['CharacterSetName'] = charset
+        ncharset = rc.get('NcharCharacterSetName', '')
+        if ncharset and ncharset != '':
+            props['NcharCharacterSetName'] = ncharset
+
+        # IMMUTABLE: LicenseModel
+        license_model = rc.get('LicenseModel', '')
+        if license_model and license_model != '' and license_model != 'postgresql-license':
+            props['LicenseModel'] = license_model
+
+        if cluster_id and cluster_id != '':
             props['DBClusterIdentifier'] = {'Ref': safe_logical_id(cluster_id)}
         else:
             snap_param = f'{logical}SnapshotId'
@@ -615,6 +860,22 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
             if sg_refs:
                 props['VPCSecurityGroups'] = sg_refs
 
+            # Option group reference (custom only)
+            og_names = rc.get('OptionGroupName', [])
+            if isinstance(og_names, list):
+                for og in og_names:
+                    if og and not og.startswith('default:'):
+                        props['OptionGroupName'] = {'Ref': safe_logical_id(og)}
+                        break
+
+            # Parameter group reference (custom only)
+            pg_names = rc.get('DBParameterGroupName', [])
+            if isinstance(pg_names, list):
+                for pg in pg_names:
+                    if pg and not pg.startswith('default.'):
+                        props['DBParameterGroupName'] = {'Ref': safe_logical_id(pg)}
+                        break
+
         props['MultiAZ'] = rc.get('MultiAZ', False)
         props['PubliclyAccessible'] = rc.get('PubliclyAccessible', False)
 
@@ -622,7 +883,7 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
             'Type': 'AWS::RDS::DBInstance',
             'Properties': props,
         }
-        if not cluster_id:
+        if not (cluster_id and cluster_id != ''):
             t['Outputs'][f'{logical}Endpoint'] = {
                 'Value': {'Fn::GetAtt': [logical, 'Endpoint.Address']},
                 'Export': {'Name': {'Fn::Sub': f'${{AWS::StackName}}-{logical}Endpoint'}},
@@ -654,6 +915,18 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
             win_config['DeploymentType'] = fc.get('WindowsConfiguration_DeploymentType', 'MULTI_AZ_1')
             win_config['ThroughputCapacity'] = fc.get('WindowsConfiguration_ThroughputCapacity', 32)
             win_config['PreferredSubnetId'] = {'Ref': 'DataSubnet1'}
+
+            # AD join configuration (critical for domain-joined FSx)
+            domain_name = fc.get('DomainName', '')
+            username = fc.get('UserName', '')
+            if domain_name and domain_name != '' and domain_name != '.':
+                ad_config = OrderedDict()
+                ad_config['DomainName'] = domain_name
+                ad_config['UserName'] = {'Ref': 'FSxADUsername'}
+                ad_config['Password'] = {'Ref': 'FSxADPassword'}
+                ad_config['DnsIps'] = {'Ref': 'FSxADDnsIps'}
+                win_config['SelfManagedActiveDirectoryConfiguration'] = ad_config
+
             fsx_props['WindowsConfiguration'] = win_config
 
         fsx_props['Tags'] = [
@@ -946,16 +1219,39 @@ def generate_supporting(resources, inventory, sg_id_to_logical):
         kc = key.config
         key_id = kc.get('KeyId', 'unnamed')
         logical = safe_logical_id(key_id)
+        description = kc.get('Description', '')
+
+        key_props = OrderedDict()
+        key_props['Description'] = description or f'DR key (source: {key_id})'
+        key_props['Enabled'] = kc.get('Enabled', True)
+        # IMMUTABLE: KeyUsage — cannot change after creation
+        key_props['KeyUsage'] = kc.get('KeyUsage', 'ENCRYPT_DECRYPT')
+        # IMMUTABLE: KeySpec — cannot change after creation
+        key_props['KeySpec'] = kc.get('KeySpec', 'SYMMETRIC_DEFAULT')
+        # IMMUTABLE: MultiRegion — cannot change after creation
+        key_props['MultiRegion'] = kc.get('MultiRegion', False)
+        key_props['Tags'] = [
+            {'Key': 'Name', 'Value': (description or key_id)[:128]},
+            {'Key': 'SourceKeyId', 'Value': key_id},
+            {'Key': 'IMMUTABLE', 'Value': 'KeyUsage, KeySpec, MultiRegion cannot change after creation'},
+        ]
+
         t['Resources'][logical] = {
             'Type': 'AWS::KMS::Key',
-            'Properties': OrderedDict([
-                ('Description', kc.get('Description', f'DR key {key_id}')),
-                ('Enabled', kc.get('Enabled', True)),
-                ('KeyUsage', kc.get('KeyUsage', 'ENCRYPT_DECRYPT')),
-                ('Tags', [{'Key': 'Name', 'Value': kc.get('Description', key_id)[:128]},
-                          {'Key': 'SourceKeyId', 'Value': key_id}]),
-            ]),
+            'Properties': key_props,
         }
+
+        # Alias — use description-based name or source key ID
+        alias_suffix = description.replace(' ', '-').lower()[:20] if description else key_id[:20]
+        alias_name = f'alias/dr-{alias_suffix}'
+        t['Resources'][f'{logical}Alias'] = {
+            'Type': 'AWS::KMS::Alias',
+            'Properties': {
+                'AliasName': alias_name,
+                'TargetKeyId': {'Ref': logical},
+            },
+        }
+
         t['Outputs'][f'{logical}Arn'] = {
             'Value': {'Fn::GetAtt': [logical, 'Arn']},
             'Export': {'Name': {'Fn::Sub': f'${{AWS::StackName}}-{logical}'}},
