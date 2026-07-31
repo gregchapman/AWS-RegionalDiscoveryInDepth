@@ -116,10 +116,12 @@ def step_completed(run_dir: str, step: str) -> bool:
         iac_dir = os.path.join(run_dir, 'iac-templates')
         if not os.path.isdir(iac_dir):
             return False
+        # v3 writes to iac-templates/templates/, v1 writes directly to iac-templates/
         templates_dir = os.path.join(iac_dir, 'templates')
-        if not os.path.isdir(templates_dir):
-            return False
-        return len(_glob.glob(os.path.join(templates_dir, '*.yaml'))) > 0
+        if os.path.isdir(templates_dir):
+            return len(_glob.glob(os.path.join(templates_dir, '*.yaml'))) > 0
+        # Fallback: v1 layout (templates directly in iac-templates/)
+        return len(_glob.glob(os.path.join(iac_dir, '*.yaml'))) > 0
 
     elif step == 'dr-assess':
         return os.path.isfile(os.path.join(run_dir, 'dr-gaps.md'))

@@ -22,25 +22,16 @@ Their environment: 30 EC2, 3 RDS (Aurora Postgres + 2 Oracle), 1 FSx Windows
 
 ---
 
-## Critical Next Step: Graph-Driven IaC Generation
+## Critical Next Step: Graph-Driven IaC Generation — COMPLETED
 
-### Problem Statement
+See "Completed" section below for implementation details.
 
-The current `iac_blueprint.py` has two fundamental flaws:
+The architecture described here has been implemented across three modules:
+`dependency_graph.py`, `schema_template_generator.py`, and the new
+`iac_blueprint.py` (v3). The old tier-based generator is preserved as
+`iac_blueprint_v1.py`.
 
-1. **Hardcoded tier structure.** It assumes 8 output files (00-foundation through
-   06-supporting). This is an artifact of one customer's environment. A different
-   customer might need 3 stacks or 20. The number of deployment groups should be
-   an *output* of analyzing the dependency graph, not a hardcoded assumption.
-
-2. **Only handles resources with bespoke generator functions.** If the inventory
-   contains EKS, DynamoDB, Cognito, API Gateway, SQS, Step Functions, or any
-   service we haven't written a specific generator for, those resources are
-   silently dropped. We invested in CFN schemas that know every property of every
-   resource type — we should be using them to generate templates dynamically for
-   ANY resource in the inventory.
-
-### Required Architecture
+### Architecture (as implemented)
 
 The new `iac_blueprint.py` should work like this:
 
@@ -111,27 +102,28 @@ GENERATE DEPLOY.md
    (e.g., SubnetId references a Subnet). Combined with a small set of known
    ordering rules (VPC → Subnet → SG → Compute), we can auto-derive order.
 
-### Implementation Plan
+### Implementation — DONE
 
-1. Build a `dependency_graph.py` module:
+1. ✅ `dependency_graph.py` module:
    - Input: inventory categories + their CFN types
    - Derives edges from: property references, known patterns, AD dependencies
    - Outputs: ordered list of deployment groups with resources assigned
+   - Partitions respecting 200-resource cap (well under CFN 500 limit)
 
-2. Build a `schema_template_generator.py` module:
+2. ✅ `schema_template_generator.py` module:
    - Input: resource config dict + CFN schema
    - Outputs: CFN resource properties block with all matching fields
    - Handles: parameterization of region-specific values, immutable marking
+   - Falls back gracefully when no schema cache is available
 
-3. Rewrite `iac_blueprint.py` to orchestrate:
+3. ✅ `iac_blueprint.py` rewritten as orchestrator:
    - Load inventory → map to CFN types → build graph → partition → generate
-   - Keep bespoke handlers for SGs (cross-refs) and LBs (action wiring)
+   - Bespoke handlers for SGs (cross-refs) and LBs (action wiring)
    - Everything else goes through the generic schema-driven path
 
-4. Retain the current bespoke generators as fallbacks:
-   - If a resource type has a bespoke handler AND is in inventory, use it
-   - Otherwise, fall through to schema-driven generation
-   - This means Instem's output doesn't regress while we build the generic path
+4. ✅ `iac_blueprint_v1.py` retained as fallback:
+   - Accessible via `python3 iac_blueprint.py --v1`
+   - Instem output doesn't regress while we validate the generic path
 
 ---
 
@@ -152,14 +144,30 @@ ebs_snapshots, ami_inventory, fsx, vpn, secretsmanager, vpc, elbv2, rds.
 Produces `dr-gaps.md` with 10 severity-ranked checks and recommended
 recovery sequence.
 
-### IaC Blueprint v1 (Tier-Based) — DONE (but being superseded)
+### IaC Blueprint v1 (Tier-Based) — DONE (superseded by v3)
 
-Current `iac_blueprint.py` produces 8 tier templates for Instem's environment:
+Current `iac_blueprint_v1.py` produces 8 tier templates for Instem's environment:
 00-foundation, 01-security-groups, 02-data-tier, 03a-dc-compute,
 03-compute-tier, 04-network-tier, 05-serverless, 06-supporting.
 
-This works for Instem but doesn't generalize. Being replaced by graph-driven
-approach (see above).
+This works for Instem but doesn't generalize. Superseded by graph-driven
+approach (v3). Available as fallback via `python3 iac_blueprint.py --v1`.
+
+### Graph-Driven IaC Blueprint (v3) — DONE
+
+New `iac_blueprint.py` implements the graph-driven architecture:
+
+- `dependency_graph.py` — builds resource graph, derives tier ordering,
+  partitions into deployment groups (respects 500-resource CFN limit)
+- `schema_template_generator.py` — generic CFN block generation from
+  any resource config + CFN schema. Handles parameterization, immutable
+  marking, cross-group ImportValue
+- `iac_blueprint.py` — orchestrator. Routes SGs and LBs to bespoke
+  handlers, everything else through schema-driven path
+
+Validated against OAG-CS-FS (3117 deployable resources → 23 groups)
+and synthetic Instem-like data. Old tier-based generator preserved as
+`iac_blueprint_v1.py` (accessible via `--v1` flag).
 
 ### CFN Schema Integration — DONE
 
@@ -209,11 +217,7 @@ TGWs, NAT GWs, Internet GWs — all with region-specific IDs. Need to:
 
 ## Planned (Priority Order)
 
-### 1. Graph-Driven IaC Blueprint Rewrite
-
-See "Critical Next Step" section above. This is the primary work item.
-
-### 2. Remediation IaC Generator
+### 1. Remediation IaC Generator
 
 Prescriptive CFN to fix DR readiness gaps BEFORE a recovery is needed:
 - AWS Backup plan + vault + cross-region copy rules
@@ -223,7 +227,7 @@ Prescriptive CFN to fix DR readiness gaps BEFORE a recovery is needed:
 
 This goes into the *source region* to establish replication foundation.
 
-### 3. Hand-Crafted Templates for Common Services
+### 2. Hand-Crafted Templates for Common Services
 
 Priority based on GovCloud prevalence:
 - `ecs.yaml` — clusters, services, task definitions (chained)
@@ -235,17 +239,17 @@ Priority based on GovCloud prevalence:
 - `stepfunctions.yaml` — state machines, activities
 - `ecr.yaml` — repositories, lifecycle policies
 
-### 4. Deployment Orchestrator
+### 3. Deployment Orchestrator
 
 Options remain: Sceptre, custom deploy.py, or hybrid.
 Decision deferred until graph-driven IaC generation is complete
 (the orchestrator consumes whatever the graph produces).
 
-### 5. CFN Linting
+### 4. CFN Linting
 
 Validate generated templates with cfn-lint before writing.
 
-### 6. Import Mode
+### 5. Import Mode
 
 The `--mode import` flag (exact state reproduction) needs testing.
 

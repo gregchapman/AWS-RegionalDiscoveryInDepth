@@ -20,7 +20,7 @@ Five scripts, one orchestrator:
 | `deep_discover.py` | Detailed inventory using all templates | ~60s |
 | `graph_discover.py` | Audience-driven architecture views + draw.io diagram | ~10s |
 | `cfn_schema_cache.py` | Cache CFN type schemas for immutables enforcement | ~60s |
-| `iac_blueprint.py` | Tier-based CloudFormation templates from inventory | ~15s |
+| `iac_blueprint.py` | Graph-driven CloudFormation templates from inventory | ~15s |
 | `dr_assess.py` | DR readiness gap analysis from inventory | ~5s |
 | `cfn_immutables.py` | Audit tool — find uncaptured immutable properties | dev use |
 | **`discover.py`** | **Orchestrator — runs the full pipeline with resume** | — |
@@ -63,9 +63,9 @@ output/
             ├── architecture-operations-<region>.md
             ├── architecture-<region>.drawio          # Native draw.io diagram
             ├── iac-templates/                        # Step 5: CloudFormation templates
-            │   ├── templates/                        #   One CFN template per resource type
-            │   ├── params/                           #   Per-resource parameter files
-            │   ├── DEPLOY.md                         #   Deployment orchestration
+            │   ├── templates/                        #   One CFN template per deployment group
+            │   ├── params/                           #   One param file per deployment group
+            │   ├── DEPLOY.md                         #   Deployment order from graph
             │   └── manual-steps.md                   #   Resources needing manual action
             ├── dr-gaps.md                            # Step 6: DR readiness gap report
             └── errors.md                             # Error log for this run
@@ -422,9 +422,10 @@ discover.py (orchestrator, --resume support)
   │    → architecture-{region}.drawio
   │
   ├─ Step 5: iac_blueprint.py
-  │    CloudFormation templates from inventory
-  │    → iac-templates/templates/*.yaml
-  │    → iac-templates/params/*/*.json
+  │    Graph-driven CloudFormation templates from inventory
+  │    Uses: dependency_graph.py, schema_template_generator.py
+  │    → iac-templates/templates/*.yaml (one per deployment group)
+  │    → iac-templates/params/*.yaml
   │    → iac-templates/DEPLOY.md
   │
   └─ Step 6: dr_assess.py
@@ -462,41 +463,68 @@ Transforms a discovery inventory into deployable CloudFormation templates.
 Runs automatically as Step 5 of the pipeline. Can also be run standalone
 to regenerate templates (e.g., after modifying include/exclude filters).
 
-**Philosophy:** The inventory proves what exists. The blueprint proves we
-can reproduce it. One shared template per resource type, one parameter
-file per resource instance (Sceptre-style separation).
+**Architecture (v3 — graph-driven):**
+
+1. Load inventory from `deep_discover.py` output
+2. Build a dependency graph (`dependency_graph.py`) — assigns resources to
+   tiers, derives ordering from CFN schema references + known patterns
+3. Partition into deployment groups (respecting CFN 500-resource limit)
+4. Generate a CFN template per group:
+   - Security Groups → bespoke handler (cross-SG `!Ref`, self-ref rules)
+   - Load Balancers → bespoke handler (Listener→TG action wiring)
+   - Everything else → schema-driven generation (`schema_template_generator.py`)
+5. Generate `DEPLOY.md` with ordered deployment sequence from graph
+6. Generate `manual-steps.md` for non-CFN resources
+
+**Key modules:**
+
+| Module | Purpose |
+|--------|---------|
+| `dependency_graph.py` | Graph builder, tier assignment, group partitioning |
+| `schema_template_generator.py` | Generic CFN block generation from config + schema |
+| `iac_blueprint.py` | Orchestrator — routes groups to handlers, writes output |
+| `iac_blueprint_v1.py` | Previous tier-based generator (fallback via `--v1`) |
+
+**Philosophy:** The number of output stacks is an *output* of analyzing
+the dependency graph, not a hardcoded assumption. Any resource in the
+inventory that has a CFN type mapping gets a template — no hand-crafted
+generator function required.
 
 ### Usage
 
 ```bash
-# Generate IaC from a discovery run
+# Generate IaC from a discovery run (graph-driven, default)
 python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/
 
-# DR mode (parameterizes region-specific values — default)
-python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/ --mode dr
+# Fallback to v1 tier-based generator
+python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/ --v1
 ```
 
 ### Output Structure
 
 ```
 <run-directory>/iac-templates/
-├── templates/                    ← One CFN template per resource type
-│   ├── ec2-instances.yaml + .md
-│   ├── rds-instances.yaml + .md
-│   ├── lambda-functions.yaml + .md
+├── templates/                    ← One CFN template per deployment group
+│   ├── 00-foundation.yaml
+│   ├── 01-security.yaml
+│   ├── 02-encryption.yaml
+│   ├── 03-dc_compute.yaml       (only if DCs detected)
+│   ├── 04-compute.yaml
+│   ├── 05-network.yaml
+│   ├── 06-serverless.yaml
+│   ├── ...                       (groups split if > 200 resources)
+│   └── NN-connectivity.yaml
+├── params/                       ← One param file per deployment group
+│   ├── 00-foundation-params.yaml
+│   ├── 01-security-params.yaml
 │   └── ...
-├── params/                       ← One JSON param file per resource
-│   ├── ec2-instances/
-│   │   ├── web-server-1a.json
-│   │   ├── web-server-1b.json
-│   │   └── ...
-│   ├── rds-instances/
-│   │   └── prod-db.json
-│   └── ...
-├── 01-security-groups.yaml + .md ← Bespoke (cross-SG references)
-├── DEPLOY.md                     ← Orchestration commands
+├── DEPLOY.md                     ← Deployment order from graph
 └── manual-steps.md               ← Resources needing manual action
 ```
+
+Group names and count are determined by the dependency graph — not
+hardcoded. An environment with 5 resources might produce 3 stacks.
+An environment with 3000 resources might produce 25 stacks.
 
 ### Filtering (include/exclude)
 
