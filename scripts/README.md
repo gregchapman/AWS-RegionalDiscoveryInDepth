@@ -25,6 +25,23 @@ hardcoded — everything is passed via CLI arguments.
 | `replicate-parameters.py` | Copy all SSM parameters to DR region | `--source-region`, `--dest-region` |
 | `map-backup-to-resources.py` | Map Backup recovery points to AMI/Snapshot IDs | `--source-region`, `--dr-region`, `--vault-name` |
 
+### Instance Configuration Discovery (SSM Documents)
+
+| Script | Purpose | Deploy As |
+|--------|---------|-----------|
+| `ssm-dhcp-discovery.yaml` | Discover DHCP vs static IP/DNS on all instances | SSM Command Document |
+
+Deploy and run:
+```bash
+aws ssm create-document --name "DR-DHCP-Discovery" \
+  --document-type "Command" --content file://scripts/ssm-dhcp-discovery.yaml \
+  --document-format YAML
+
+aws ssm send-command --document-name "DR-DHCP-Discovery" \
+  --targets "Key=tag-key,Values=OS"
+```
+See the document header comments for full result retrieval instructions.
+
 ### Verification (run after deployment or during DR test)
 
 | Script | Purpose | Key Arguments |

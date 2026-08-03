@@ -26,17 +26,30 @@ output/<label>/<region>/<timestamp>/
 ├── summary.txt                    ← Quick resource counts per category
 ├── dr-gaps.md                     ← START HERE: DR readiness gap report
 ├── iac-templates/
-│   ├── DEPLOY.md                  ← Stack deployment commands in order
-│   ├── manual-steps.md            ← Things that can't be automated
-│   ├── templates/*.yaml           ← One CFN template per resource type
-│   └── params/*/*.json            ← One param file per resource instance
+│   ├── DEPLOY.md                  ← Stack deployment order + pre/post steps
+│   ├── manual-steps.md            ← Things that can't be automated (SSM params, secrets)
+│   └── templates/                 ← One self-contained CFN template per deployment group
+│       ├── 00-foundation.yaml     ← VPC, subnets, routes, DHCP, NATs, IGW
+│       ├── 01-security.yaml       ← All SGs with ingress rules + cross-refs
+│       ├── 02-encryption.yaml     ← KMS keys + aliases
+│       ├── 03-data.yaml           ← RDS, Aurora, FSx (restore from snapshots)
+│       ├── 04-dc_compute.yaml     ← Domain Controllers (boot first!)
+│       ├── 05-compute.yaml        ← EC2 instances + their CW alarms
+│       ├── 06-network.yaml        ← NLBs/ALBs + TGs + Listeners + targets
+│       ├── 07-serverless.yaml     ← Lambda + EventBridge
+│       ├── 08-supporting.yaml     ← VPC Endpoints, S3, ACM, SNS
+│       └── 09-connectivity.yaml   ← TGW, CGW, VPN
 ├── architecture-operations-*.md   ← Recovery-focused view
 └── architecture-engineering-*.md  ← Full technical detail
 ```
 
 **Start here:** `dr-gaps.md` — it tells you what's broken, what's missing,
-and what order to fix things in. Then use `architecture-operations-*.md`
-for the full dependency chain detail.
+and what order to fix things in. Then use `iac-templates/DEPLOY.md` for the
+deployment sequence and `architecture-operations-*.md` for dependency chains.
+
+**Each template is self-contained:** typed parameters with source values as
+defaults, deploy command in the header, no separate param files needed. Deploy
+via CloudFormation console (fill in blanks) or CLI.
 
 ## Step 1: Assess — What Do We Have?
 

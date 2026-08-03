@@ -63,8 +63,7 @@ output/
             ├── architecture-operations-<region>.md
             ├── architecture-<region>.drawio          # Native draw.io diagram
             ├── iac-templates/                        # Step 5: CloudFormation templates
-            │   ├── templates/                        #   One CFN template per deployment group
-            │   ├── params/                           #   One param file per deployment group
+            │   ├── templates/                        #   One self-contained CFN template per deployment group
             │   ├── DEPLOY.md                         #   Deployment order from graph
             │   └── manual-steps.md                   #   Resources needing manual action
             ├── dr-gaps.md                            # Step 6: DR readiness gap report
@@ -425,7 +424,6 @@ discover.py (orchestrator, --resume support)
   │    Graph-driven CloudFormation templates from inventory
   │    Uses: dependency_graph.py, schema_template_generator.py
   │    → iac-templates/templates/*.yaml (one per deployment group)
-  │    → iac-templates/params/*.yaml
   │    → iac-templates/DEPLOY.md
   │
   └─ Step 6: dr_assess.py
@@ -514,17 +512,14 @@ python3 iac_blueprint.py --input output/acme-prod/us-east-1/20260505-151053/ --v
 │   ├── 06-serverless.yaml
 │   ├── ...                       (groups split if > 200 resources)
 │   └── NN-connectivity.yaml
-├── params/                       ← One param file per deployment group
-│   ├── 00-foundation-params.yaml
-│   ├── 01-security-params.yaml
-│   └── ...
 ├── DEPLOY.md                     ← Deployment order from graph
 └── manual-steps.md               ← Resources needing manual action
 ```
 
-Group names and count are determined by the dependency graph — not
-hardcoded. An environment with 5 resources might produce 3 stacks.
-An environment with 3000 resources might produce 25 stacks.
+Each template is self-contained with typed parameters and source values as
+defaults. No separate param files. Group names and count are determined by
+the dependency graph — an environment with 5 resources might produce 3 stacks,
+one with 3000 might produce 25.
 
 ### Filtering (include/exclude)
 
