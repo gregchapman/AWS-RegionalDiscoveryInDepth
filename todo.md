@@ -80,11 +80,28 @@ Fixes committed but not yet tested in a fresh Instem run:
 
 ### 1. Template Completeness Audit
 
-Run v3 against Instem with all fixes, then:
-- cfn-lint the output templates
-- Compare resource-by-resource against the N-Able reference for quality
-- Verify every resource in the inventory appears in exactly one template
-  (or is explicitly in manual-steps.md / assessment-only)
+Every configurable property on every resource should be a parameter with
+the source value as Default. The operator deploys with defaults for exact
+replica, or overrides to adjust for DR.
+
+Method: take the 175636 run inventory, pick one resource per type, compare
+field-by-field against what the template emits. Reference data at:
+`C:\RGS-Code\Instem-rgs-3808821-048766100331\20260731-175636\`
+
+Known gaps to close:
+- EC2: EbsOptimized, Monitoring, CreditSpecification, InstanceType as param
+- RDS: AllocatedStorage, StorageType, Iops, BackupWindow, MaintenanceWindow,
+  MasterUsername (parameterized, NoEcho for password)
+- Lambda: Role ARN (region-specific), VPC config (SubnetIds, SecurityGroupIds)
+- LB: IpAddressType, attributes (access logs, idle timeout)
+- FSx: AutomaticBackupRetentionDays, DailyAutomaticBackupStartTime
+- CloudWatch: Dimensions (instance IDs change in DR), AlarmActions (SNS ARNs)
+- EventBridge: Targets (Lambda ARNs are region-specific)
+- VPN: tunnel config (pre-shared keys, inside CIDRs)
+- SG: egress rules (IpPermissionsEgress)
+
+Principle: if the inventory captured it and CFN supports setting it,
+it should be in the template as a parameter with Default = source value.
 
 ### 2. Remediation IaC Generator
 

@@ -1,0 +1,336 @@
+---
+# SSM Document: DHCP Configuration Discovery
+#
+# Discovers whether EC2 instances use DHCP-assigned IP addresses and DNS
+# servers, or have static/manual configuration that would need to be
+# recreated in a DR scenario.
+#
+# Supports both Windows and Linux. Detects:
+#   - IP address assignment method (DHCP vs static)
+#   - DNS server assignment method (DHCP vs static)
+#   - Current IP addresses and DNS servers
+#   - DHCP lease details (when available)
+#
+# Deploy:
+#   aws ssm create-document \
+#     --name "DR-DHCP-Discovery" \
+#     --document-type "Command" \
+#     --content file://ssm-dhcp-discovery.yaml \
+#     --document-format YAML
+#
+# Run against all instances:
+#   aws ssm send-command \
+#     --document-name "DR-DHCP-Discovery" \
+#     --targets '[{"Key":"InstanceIds","Values":["*"]}]'
+#
+# Run against specific instances:
+#   aws ssm send-command \
+#     --document-name "DR-DHCP-Discovery" \
+#     --instance-ids i-abc123 i-def456
+
+schemaVersion: '2.2'
+description: >-
+  Discovers IP address and DNS assignment method (DHCP vs static) on
+  Windows and Linux instances. Reports whether the instance relies on
+  DHCP for addressing and name resolution, or has static configuration
+  that must be manually replicated in DR.
+parameters: {}
+mainSteps:
+  - action: aws:runPowerShellScript
+    name: WindowsDHCPDiscovery
+    precondition:
+      StringEquals:
+        - platformType
+        - Windows
+    inputs:
+      runCommand:
+        - |
+          Write-Output "=== DHCP Configuration Discovery (Windows) ==="
+          Write-Output "Hostname: $env:COMPUTERNAME"
+          Write-Output "Timestamp: $(Get-Date -Format o)"
+          Write-Output ""
+
+          $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
+
+          foreach ($adapter in $adapters) {
+              $ipConfig = Get-NetIPConfiguration -InterfaceIndex $adapter.ifIndex
+              $ipAddr = Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+              $dhcpEnabled = (Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4).Dhcp
+
+              Write-Output "--- Interface: $($adapter.Name) ($($adapter.InterfaceDescription)) ---"
+              Write-Output "  MAC Address:    $($adapter.MacAddress)"
+              Write-Output "  IP Assignment:  $(if ($dhcpEnabled -eq 'Enabled') { 'DHCP' } else { 'STATIC' })"
+
+              foreach ($ip in $ipAddr) {
+                  Write-Output "  IPv4 Address:   $($ip.IPAddress)/$($ip.PrefixLength)"
+              }
+
+              # DNS configuration
+              $dnsServers = (Get-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4).ServerAddresses
+              $dnsFromDhcp = $null
+              try {
+                  $wmi = Get-CimInstance -ClassName Win32_NetworkAdapterConfiguration | Where-Object { $_.InterfaceIndex -eq $adapter.ifIndex }
+                  if ($wmi) {
+                      $dnsFromDhcp = $wmi.DHCPEnabled
+                  }
+              } catch {}
+
+              # Determine DNS source: if DHCP is enabled and no static DNS override exists
+              $dnsClientInterface = Get-DnsClient -InterfaceIndex $adapter.ifIndex -ErrorAction SilentlyContinue
+              $hasStaticDns = $false
+              try {
+                  $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{$($adapter.InterfaceGuid)}"
+                  $staticDns = (Get-ItemProperty -Path $regPath -Name NameServer -ErrorAction SilentlyContinue).NameServer
+                  if ($staticDns -and $staticDns -ne '') {
+                      $hasStaticDns = $true
+                  }
+              } catch {}
+
+              if ($hasStaticDns) {
+                  Write-Output "  DNS Assignment: STATIC"
+              } elseif ($dhcpEnabled -eq 'Enabled') {
+                  Write-Output "  DNS Assignment: DHCP"
+              } else {
+                  Write-Output "  DNS Assignment: UNKNOWN (no DHCP, no static detected)"
+              }
+
+              Write-Output "  DNS Servers:    $($dnsServers -join ', ')"
+
+              # DHCP details
+              if ($dhcpEnabled -eq 'Enabled' -and $wmi) {
+                  Write-Output "  DHCP Server:    $($wmi.DHCPServer)"
+                  Write-Output "  Lease Obtained: $($wmi.DHCPLeaseObtained)"
+                  Write-Output "  Lease Expires:  $($wmi.DHCPLeaseExpires)"
+              }
+
+              # Default gateway
+              $gw = $ipConfig.IPv4DefaultGateway
+              if ($gw) {
+                  Write-Output "  Default GW:     $($gw.NextHop)"
+              }
+
+              Write-Output ""
+          }
+
+          # Summary verdict
+          Write-Output "=== SUMMARY ==="
+          $allDhcpIp = $true
+          $allDhcpDns = $true
+          foreach ($adapter in $adapters) {
+              $dhcpEnabled = (Get-NetIPInterface -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4).Dhcp
+              if ($dhcpEnabled -ne 'Enabled') { $allDhcpIp = $false }
+              try {
+                  $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces\{$($adapter.InterfaceGuid)}"
+                  $staticDns = (Get-ItemProperty -Path $regPath -Name NameServer -ErrorAction SilentlyContinue).NameServer
+                  if ($staticDns -and $staticDns -ne '') { $allDhcpDns = $false }
+              } catch {}
+          }
+          Write-Output "  IP via DHCP:  $(if ($allDhcpIp) { 'YES - all interfaces' } else { 'NO - static IP detected' })"
+          Write-Output "  DNS via DHCP: $(if ($allDhcpDns) { 'YES - all interfaces' } else { 'NO - static DNS detected' })"
+          Write-Output ""
+          if (-not $allDhcpIp) {
+              Write-Output "  WARNING: Static IP detected. This instance requires manual IP"
+              Write-Output "           assignment or ENI pre-configuration in DR."
+          }
+          if (-not $allDhcpDns) {
+              Write-Output "  WARNING: Static DNS detected. DNS servers must be manually"
+              Write-Output "           configured in DR (will not inherit from DHCP options)."
+          }
+
+  - action: aws:runShellScript
+    name: LinuxDHCPDiscovery
+    precondition:
+      StringEquals:
+        - platformType
+        - Linux
+    inputs:
+      runCommand:
+        - |
+          #!/bin/bash
+          echo "=== DHCP Configuration Discovery (Linux) ==="
+          echo "Hostname: $(hostname)"
+          echo "Timestamp: $(date -Iseconds)"
+          echo ""
+
+          # Detect init system / network manager
+          NETMGR="unknown"
+          if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+              NETMGR="NetworkManager"
+          elif systemctl is-active --quiet systemd-networkd 2>/dev/null; then
+              NETMGR="systemd-networkd"
+          elif [ -d /etc/netplan ]; then
+              NETMGR="netplan"
+          elif [ -d /etc/sysconfig/network-scripts ]; then
+              NETMGR="ifcfg"
+          fi
+          echo "Network Manager: $NETMGR"
+          echo ""
+
+          # Get active interfaces (skip loopback)
+          INTERFACES=$(ip -o link show up | awk -F': ' '{print $2}' | grep -v '^lo$')
+
+          for IFACE in $INTERFACES; do
+              echo "--- Interface: $IFACE ---"
+
+              # MAC
+              MAC=$(ip link show "$IFACE" | awk '/link\/ether/ {print $2}')
+              echo "  MAC Address:    $MAC"
+
+              # IP addresses
+              IPS=$(ip -4 addr show "$IFACE" | awk '/inet / {print $2}')
+              for IP in $IPS; do
+                  echo "  IPv4 Address:   $IP"
+              done
+
+              # Determine IP assignment method
+              IP_METHOD="UNKNOWN"
+
+              # Check if dhclient is running for this interface
+              if pgrep -f "dhclient.*$IFACE" > /dev/null 2>&1; then
+                  IP_METHOD="DHCP (dhclient)"
+              elif [ -f "/var/lib/dhcp/dhclient.${IFACE}.leases" ] || \
+                   [ -f "/var/lib/dhclient/dhclient-${IFACE}.leases" ]; then
+                  IP_METHOD="DHCP (dhclient - lease file exists)"
+              fi
+
+              # Check NetworkManager
+              if [ "$NETMGR" = "NetworkManager" ] && command -v nmcli > /dev/null 2>&1; then
+                  NM_METHOD=$(nmcli -t -f IP4.METHOD device show "$IFACE" 2>/dev/null | cut -d: -f2)
+                  if [ "$NM_METHOD" = "auto" ]; then
+                      IP_METHOD="DHCP (NetworkManager)"
+                  elif [ "$NM_METHOD" = "manual" ]; then
+                      IP_METHOD="STATIC (NetworkManager)"
+                  fi
+              fi
+
+              # Check systemd-networkd
+              if [ "$NETMGR" = "systemd-networkd" ]; then
+                  NETWORKD_CONF=$(grep -rl "$IFACE\|Match" /etc/systemd/network/*.network 2>/dev/null | head -1)
+                  if [ -n "$NETWORKD_CONF" ]; then
+                      if grep -qi "DHCP=yes\|DHCP=ipv4\|DHCP=true" "$NETWORKD_CONF" 2>/dev/null; then
+                          IP_METHOD="DHCP (systemd-networkd)"
+                      else
+                          IP_METHOD="STATIC (systemd-networkd)"
+                      fi
+                  fi
+              fi
+
+              # Check ifcfg scripts (RHEL/CentOS)
+              if [ "$NETMGR" = "ifcfg" ] || [ -f "/etc/sysconfig/network-scripts/ifcfg-${IFACE}" ]; then
+                  IFCFG="/etc/sysconfig/network-scripts/ifcfg-${IFACE}"
+                  if [ -f "$IFCFG" ]; then
+                      BOOTPROTO=$(grep -i "^BOOTPROTO" "$IFCFG" | cut -d= -f2 | tr -d '"' | tr '[:upper:]' '[:lower:]')
+                      if [ "$BOOTPROTO" = "dhcp" ]; then
+                          IP_METHOD="DHCP (ifcfg)"
+                      elif [ "$BOOTPROTO" = "static" ] || [ "$BOOTPROTO" = "none" ]; then
+                          IP_METHOD="STATIC (ifcfg)"
+                      fi
+                  fi
+              fi
+
+              # Check cloud-init (AWS default for most AMIs)
+              if [ -f /run/cloud-init/result.json ] && [ "$IP_METHOD" = "UNKNOWN" ]; then
+                  IP_METHOD="DHCP (cloud-init/AWS default)"
+              fi
+
+              echo "  IP Assignment:  $IP_METHOD"
+
+              # DNS configuration
+              DNS_METHOD="UNKNOWN"
+              DNS_SERVERS=""
+
+              # resolv.conf
+              if [ -f /etc/resolv.conf ]; then
+                  DNS_SERVERS=$(grep "^nameserver" /etc/resolv.conf | awk '{print $2}' | tr '\n' ', ' | sed 's/,$//')
+
+                  # Check if resolv.conf is managed by DHCP/cloud-init
+                  if head -3 /etc/resolv.conf | grep -qi "generated\|dhclient\|cloud-init\|NetworkManager\|systemd"; then
+                      DNS_METHOD="DHCP (resolv.conf auto-generated)"
+                  elif [ -L /etc/resolv.conf ]; then
+                      DNS_METHOD="MANAGED (symlink to $(readlink /etc/resolv.conf))"
+                  else
+                      DNS_METHOD="POSSIBLY STATIC (resolv.conf not marked as generated)"
+                  fi
+              fi
+
+              # Check if systemd-resolved is managing DNS
+              if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+                  RESOLVED_DNS=$(resolvectl dns "$IFACE" 2>/dev/null | awk '{for(i=2;i<=NF;i++) printf "%s,",$i}' | sed 's/,$//')
+                  if [ -n "$RESOLVED_DNS" ]; then
+                      DNS_SERVERS="$RESOLVED_DNS"
+                      DNS_METHOD="systemd-resolved"
+                  fi
+              fi
+
+              echo "  DNS Assignment: $DNS_METHOD"
+              echo "  DNS Servers:    $DNS_SERVERS"
+
+              # DHCP lease details
+              LEASE_FILE=""
+              for LF in "/var/lib/dhcp/dhclient.${IFACE}.leases" \
+                        "/var/lib/dhclient/dhclient-${IFACE}.leases" \
+                        "/var/lib/dhcp/dhclient.leases" \
+                        "/var/lib/NetworkManager/dhclient-${IFACE}.conf"; do
+                  if [ -f "$LF" ]; then
+                      LEASE_FILE="$LF"
+                      break
+                  fi
+              done
+              if [ -n "$LEASE_FILE" ]; then
+                  DHCP_SERVER=$(grep "dhcp-server-identifier" "$LEASE_FILE" | tail -1 | awk '{print $NF}' | tr -d ';')
+                  echo "  DHCP Server:    $DHCP_SERVER"
+                  echo "  Lease File:     $LEASE_FILE"
+              fi
+
+              # Default gateway
+              GW=$(ip route show default dev "$IFACE" 2>/dev/null | awk '{print $3}' | head -1)
+              if [ -n "$GW" ]; then
+                  echo "  Default GW:     $GW"
+              fi
+
+              echo ""
+          done
+
+          # Summary
+          echo "=== SUMMARY ==="
+          ALL_DHCP_IP=true
+          ALL_DHCP_DNS=true
+
+          for IFACE in $INTERFACES; do
+              # Re-check IP method (simplified)
+              if pgrep -f "dhclient.*$IFACE" > /dev/null 2>&1 || \
+                 [ -f /run/cloud-init/result.json ]; then
+                  : # DHCP
+              elif [ "$NETMGR" = "NetworkManager" ] && command -v nmcli > /dev/null 2>&1; then
+                  NM_METHOD=$(nmcli -t -f IP4.METHOD device show "$IFACE" 2>/dev/null | cut -d: -f2)
+                  if [ "$NM_METHOD" = "manual" ]; then
+                      ALL_DHCP_IP=false
+                  fi
+              fi
+          done
+
+          if head -3 /etc/resolv.conf 2>/dev/null | grep -qi "generated\|dhclient\|cloud-init\|NetworkManager"; then
+              : # DNS via DHCP
+          else
+              ALL_DHCP_DNS=false
+          fi
+
+          if [ "$ALL_DHCP_IP" = true ]; then
+              echo "  IP via DHCP:  YES - all interfaces"
+          else
+              echo "  IP via DHCP:  NO - static IP detected"
+          fi
+          if [ "$ALL_DHCP_DNS" = true ]; then
+              echo "  DNS via DHCP: YES - all interfaces"
+          else
+              echo "  DNS via DHCP: NO - static DNS detected"
+          fi
+          echo ""
+          if [ "$ALL_DHCP_IP" != true ]; then
+              echo "  WARNING: Static IP detected. This instance requires manual IP"
+              echo "           assignment or ENI pre-configuration in DR."
+          fi
+          if [ "$ALL_DHCP_DNS" != true ]; then
+              echo "  WARNING: Static DNS detected. DNS servers must be manually"
+              echo "           configured in DR (will not inherit from DHCP options)."
+          fi

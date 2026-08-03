@@ -618,6 +618,49 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
         if sg_refs:
             props['SecurityGroupIds'] = sg_refs
 
+        # BlockDeviceMappings — capture data volumes (fix #4)
+        bdm = config.get('BlockDeviceMappings', [])
+        if isinstance(bdm, list) and bdm:
+            cfn_bdm = []
+            for vol in bdm:
+                if not isinstance(vol, dict):
+                    continue
+                device = vol.get('DeviceName', '')
+                ebs = vol.get('Ebs', {})
+                if not device or not isinstance(ebs, dict):
+                    continue
+                # Skip runtime fields, keep deploy-relevant config
+                cfn_ebs = OrderedDict()
+                vol_size = ebs.get('VolumeSize')
+                vol_type = ebs.get('VolumeType', 'gp3')
+                if vol_size:
+                    cfn_ebs['VolumeSize'] = vol_size
+                cfn_ebs['VolumeType'] = vol_type
+                if ebs.get('Iops') and vol_type in ('io1', 'io2', 'gp3'):
+                    cfn_ebs['Iops'] = ebs['Iops']
+                if ebs.get('Throughput') and vol_type == 'gp3':
+                    cfn_ebs['Throughput'] = ebs['Throughput']
+                cfn_ebs['Encrypted'] = ebs.get('Encrypted', True)
+                cfn_ebs['DeleteOnTermination'] = ebs.get('DeleteOnTermination', True)
+                cfn_bdm.append({
+                    'DeviceName': device,
+                    'Ebs': cfn_ebs,
+                })
+            if cfn_bdm:
+                props['BlockDeviceMappings'] = cfn_bdm
+
+        # MetadataOptions (fix #8)
+        http_tokens = config.get('HttpTokens', '')
+        http_hop = config.get('HttpPutResponseHopLimit', '')
+        if http_tokens or http_hop:
+            meta_opts = {}
+            if http_tokens:
+                meta_opts['HttpTokens'] = http_tokens
+            if http_hop:
+                meta_opts['HttpPutResponseHopLimit'] = int(http_hop) if http_hop else 1
+            meta_opts['HttpEndpoint'] = config.get('HttpEndpoint', 'enabled')
+            props['MetadataOptions'] = meta_opts
+
         # Tags — preserve all meaningful customer tags
         tags = config.get('Tags', {})
         cfn_tags = [
@@ -876,6 +919,22 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
             props['DBSubnetGroupName'] = {'Ref': 'DBSubnetGroup'}
             props['StorageEncrypted'] = rc.get('StorageEncrypted', True)
             props['KmsKeyId'] = {'Ref': 'KmsKeyArn'}
+
+            # Storage config (fix #3, #5)
+            props['AllocatedStorage'] = rc.get('AllocatedStorage', 20)
+            props['StorageType'] = rc.get('StorageType', 'gp3')
+            iops = rc.get('Iops', '')
+            if iops and iops != '' and int(iops) > 0:
+                props['Iops'] = int(iops)
+            throughput = rc.get('StorageThroughput', '')
+            if throughput and throughput != '' and int(throughput) > 0:
+                props['StorageThroughput'] = int(throughput)
+
+            # Port (fix #3)
+            port = rc.get('Port', '')
+            if port and port != '':
+                props['Port'] = int(port)
+
             sg_refs = []
             for sg_id in rc.get('VpcSecurityGroupId', []):
                 if sg_id in sg_id_to_logical:
@@ -902,6 +961,19 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
 
         props['MultiAZ'] = rc.get('MultiAZ', False)
         props['PubliclyAccessible'] = rc.get('PubliclyAccessible', False)
+        # Operational config (fix #5)
+        props['BackupRetentionPeriod'] = rc.get('BackupRetentionPeriod', 7)
+        props['DeletionProtection'] = rc.get('DeletionProtection', True)
+        if rc.get('PreferredBackupWindow'):
+            props['PreferredBackupWindow'] = rc['PreferredBackupWindow']
+        if rc.get('PreferredMaintenanceWindow'):
+            props['PreferredMaintenanceWindow'] = rc['PreferredMaintenanceWindow']
+        if rc.get('MonitoringInterval') and int(rc.get('MonitoringInterval', 0)) > 0:
+            props['MonitoringInterval'] = int(rc['MonitoringInterval'])
+            if rc.get('MonitoringRoleArn'):
+                props['MonitoringRoleArn'] = rc['MonitoringRoleArn']
+        if rc.get('PerformanceInsightsEnabled'):
+            props['EnablePerformanceInsights'] = True
 
         t['Resources'][logical] = {
             'Type': 'AWS::RDS::DBInstance',
@@ -939,6 +1011,20 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
             win_config['DeploymentType'] = fc.get('WindowsConfiguration_DeploymentType', 'MULTI_AZ_1')
             win_config['ThroughputCapacity'] = fc.get('WindowsConfiguration_ThroughputCapacity', 32)
             win_config['PreferredSubnetId'] = {'Ref': 'DataSubnet1'}
+            # Backup retention (fix #6)
+            win_config['AutomaticBackupRetentionDays'] = fc.get('AutomaticBackupRetentionDays', 7)
+            if fc.get('DailyAutomaticBackupStartTime'):
+                win_config['DailyAutomaticBackupStartTime'] = fc['DailyAutomaticBackupStartTime']
+            if fc.get('WindowsConfiguration_WeeklyMaintenanceStartTime'):
+                win_config['WeeklyMaintenanceStartTime'] = fc['WindowsConfiguration_WeeklyMaintenanceStartTime']
+            # Audit logging
+            audit_file = fc.get('FileAccessAuditLogLevel', '')
+            audit_share = fc.get('FileShareAccessAuditLogLevel', '')
+            if audit_file or audit_share:
+                win_config['AuditLogConfiguration'] = {
+                    'FileAccessAuditLogLevel': audit_file or 'DISABLED',
+                    'FileShareAccessAuditLogLevel': audit_share or 'DISABLED',
+                }
 
             # AD join configuration (critical for domain-joined FSx)
             domain_name = fc.get('DomainName', '')
@@ -952,6 +1038,25 @@ def generate_data_tier(resources, inventory, sg_id_to_logical):
                 win_config['SelfManagedActiveDirectoryConfiguration'] = ad_config
 
             fsx_props['WindowsConfiguration'] = win_config
+
+        # Aliases / DNS names (fix #6)
+        aliases = fc.get('Aliases', [])
+        if isinstance(aliases, list) and aliases:
+            # Filter to actual alias names (not empty strings)
+            real_aliases = [a for a in aliases if isinstance(a, str) and a]
+            if real_aliases:
+                alias_param = f'{logical}Aliases'
+                t['Parameters'][alias_param] = {
+                    'Type': 'CommaDelimitedList',
+                    'Default': ','.join(real_aliases),
+                    'Description': f'DNS aliases for {fsx.name} (clients use these to connect)',
+                }
+                # Note: FSx Aliases are managed via aws fsx create-file-system-alias,
+                # not directly in CFN. Add as tag for documentation.
+                fsx_props.setdefault('Tags', []).insert(0, {
+                    'Key': 'Aliases',
+                    'Value': ','.join(real_aliases),
+                })
 
         fsx_props['Tags'] = [
             {'Key': 'Name', 'Value': fsx.name or fs_id},
@@ -1164,11 +1269,20 @@ def generate_serverless(resources, inventory):
             'Description': f'S3 key for {fn_name} (source size: {fc.get("CodeSize", 0)} bytes)',
         }
 
+        # Role ARN — parameterize (fix #9, region-specific)
+        role_arn = fc.get('Role', '')
+        role_param = f'{logical}RoleArn'
+        t['Parameters'][role_param] = {
+            'Type': 'String',
+            'Default': role_arn,
+            'Description': f'Execution role ARN for {fn_name} (must exist in DR account)',
+        }
+
         props = OrderedDict()
         props['FunctionName'] = fn_name
         props['Runtime'] = fc.get('Runtime', 'python3.12')
         props['Handler'] = fc.get('Handler', 'index.handler')
-        props['Role'] = fc.get('Role', '')
+        props['Role'] = {'Ref': role_param}
         props['MemorySize'] = fc.get('MemorySize', 128)
         props['Timeout'] = fc.get('Timeout', 30)
         props['Code'] = {
@@ -1299,6 +1413,18 @@ def generate_supporting(resources, inventory, sg_id_to_logical):
         props['VpcEndpointType'] = vpce_type
         if vpce_type == 'Interface':
             props['PrivateDnsEnabled'] = vc.get('PrivateDnsEnabled', True)
+            # SubnetIds (fix #1) — required for Interface endpoints
+            subnet_ids = vc.get('SubnetIds', [])
+            if isinstance(subnet_ids, list) and subnet_ids:
+                # Parameterize subnet IDs (region-specific)
+                sn_param = f'{logical}Subnets'
+                if sn_param not in t['Parameters']:
+                    t['Parameters'][sn_param] = {
+                        'Type': 'List<AWS::EC2::Subnet::Id>',
+                        'Default': ','.join(subnet_ids),
+                        'Description': f'Subnets for {service_name.split(".")[-1]} endpoint (source: {", ".join(subnet_ids)})',
+                    }
+                props['SubnetIds'] = {'Ref': sn_param}
             sg_refs = []
             for sg_id in (vc.get('GroupId') or []):
                 if sg_id in sg_id_to_logical:
@@ -1360,6 +1486,28 @@ def generate_supporting(resources, inventory, sg_id_to_logical):
         props['EvaluationPeriods'] = ac.get('EvaluationPeriods', 1)
         props['Threshold'] = ac.get('Threshold', 0)
         props['ComparisonOperator'] = ac.get('ComparisonOperator', 'GreaterThanThreshold')
+
+        # Dimensions (fix #2) — instance IDs will change in DR
+        dimensions = ac.get('Dimensions', [])
+        if isinstance(dimensions, list) and dimensions:
+            cfn_dims = []
+            for dim in dimensions:
+                if isinstance(dim, dict) and dim.get('Name') and dim.get('Value'):
+                    cfn_dims.append({
+                        'Name': dim['Name'],
+                        'Value': dim['Value'],
+                    })
+            if cfn_dims:
+                props['Dimensions'] = cfn_dims
+
+        # AlarmActions (fix #10) — SNS ARNs are region-specific
+        alarm_actions = ac.get('AlarmActions', [])
+        if isinstance(alarm_actions, list) and alarm_actions:
+            props['AlarmActions'] = alarm_actions
+        ok_actions = ac.get('OKActions', [])
+        if isinstance(ok_actions, list) and ok_actions:
+            props['OKActions'] = ok_actions
+
         t['Resources'][logical] = {
             'Type': 'AWS::CloudWatch::Alarm',
             'Properties': props,
