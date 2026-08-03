@@ -686,6 +686,84 @@ def generate_compute(resources, inventory, sg_id_to_logical, is_dc=False):
             'Export': {'Name': {'Fn::Sub': f'${{AWS::StackName}}-{logical}Ip'}},
         }
 
+    # ── CloudWatch Alarms bound to instances in this template ──
+    # Build map: source instance ID -> logical name in this template
+    instance_id_to_logical = {}
+    for inst in resources:
+        config = inst.config
+        source_iid = config.get('InstanceId', inst.resource_id)
+        name = short_name(inst.name)
+        inst_logical = safe_logical_id(name)
+        if source_iid:
+            instance_id_to_logical[source_iid] = inst_logical
+
+    # Search full inventory for CW alarms with InstanceId dimensions matching our instances
+    all_res = inventory.get('resources', {})
+    all_cw_alarms = all_res.get('CloudWatch Alarms', [])
+    for alarm_item in all_cw_alarms:
+        ac = alarm_item.get('config', {})
+        dimensions = ac.get('Dimensions', [])
+        if not isinstance(dimensions, list):
+            continue
+
+        # Find InstanceId dimension matching an instance in this template
+        matched_instance_logical = None
+        matched_instance_id = None
+        for dim in dimensions:
+            if (isinstance(dim, dict) and dim.get('Name') == 'InstanceId'
+                    and dim.get('Value', '') in instance_id_to_logical):
+                matched_instance_id = dim['Value']
+                matched_instance_logical = instance_id_to_logical[matched_instance_id]
+                break
+
+        if not matched_instance_logical:
+            continue
+
+        alarm_name = ac.get('AlarmName', 'unnamed')
+        alarm_logical = safe_logical_id(alarm_name)
+
+        alarm_props = OrderedDict()
+        alarm_props['AlarmName'] = alarm_name
+        if ac.get('AlarmDescription'):
+            alarm_props['AlarmDescription'] = ac['AlarmDescription']
+        alarm_props['MetricName'] = ac.get('MetricName', '')
+        alarm_props['Namespace'] = ac.get('Namespace', '')
+        alarm_props['Statistic'] = ac.get('Statistic', 'Average')
+        alarm_props['Period'] = ac.get('Period', 300)
+        alarm_props['EvaluationPeriods'] = ac.get('EvaluationPeriods', 1)
+        alarm_props['Threshold'] = ac.get('Threshold', 0)
+        alarm_props['ComparisonOperator'] = ac.get('ComparisonOperator', 'GreaterThanThreshold')
+
+        # Rebuild dimensions — replace InstanceId value with !Ref to DR instance
+        cfn_dims = []
+        for dim in dimensions:
+            if isinstance(dim, dict) and dim.get('Name') and dim.get('Value'):
+                if dim['Name'] == 'InstanceId' and dim['Value'] == matched_instance_id:
+                    cfn_dims.append({
+                        'Name': 'InstanceId',
+                        'Value': {'Ref': matched_instance_logical},
+                    })
+                else:
+                    cfn_dims.append({
+                        'Name': dim['Name'],
+                        'Value': dim['Value'],
+                    })
+        if cfn_dims:
+            alarm_props['Dimensions'] = cfn_dims
+
+        # AlarmActions — SNS ARNs (region-specific, keep as-is for operator to update)
+        alarm_actions = ac.get('AlarmActions', [])
+        if isinstance(alarm_actions, list) and alarm_actions:
+            alarm_props['AlarmActions'] = alarm_actions
+        ok_actions = ac.get('OKActions', [])
+        if isinstance(ok_actions, list) and ok_actions:
+            alarm_props['OKActions'] = ok_actions
+
+        t['Resources'][alarm_logical] = {
+            'Type': 'AWS::CloudWatch::Alarm',
+            'Properties': alarm_props,
+        }
+
     return t
 
 
@@ -1165,6 +1243,23 @@ def generate_network(resources, inventory, sg_id_to_logical):
             'Export': {'Name': {'Fn::Sub': f'${{AWS::StackName}}-{lb_logical}DnsName'}},
         }
 
+    # ── Registered Targets (keyed by TG ARN) ──
+    all_registered = all_res.get('Registered Targets', [])
+    # Build map: TG name -> list of targets
+    tg_name_to_targets = {}
+    for rt_item in all_registered:
+        rtc = rt_item.get('config', {})
+        target_id = rtc.get('Id', '')
+        target_port = rtc.get('Port', 0)
+        # Link target to its TG via TargetGroupArn or _parent_arn
+        parent_arn = rtc.get('TargetGroupArn', '') or rtc.get('_parent_arn', '')
+        tg_name_for_target = tg_arn_to_name.get(parent_arn, '')
+        if tg_name_for_target and target_id:
+            tg_name_to_targets.setdefault(tg_name_for_target, []).append({
+                'Id': target_id,
+                'Port': target_port,
+            })
+
     # ── Target Groups ──
     for tg_item in all_tgs:
         tc = tg_item.get('config', {})
@@ -1183,10 +1278,38 @@ def generate_network(resources, inventory, sg_id_to_logical):
         tg_props['HealthCheckIntervalSeconds'] = tc.get('HealthCheckIntervalSeconds', 30)
         if tc.get('HealthCheckPath'):
             tg_props['HealthCheckPath'] = tc['HealthCheckPath']
+
+        # Targets — parameterize IDs (they change in DR)
+        targets_for_tg = tg_name_to_targets.get(tg_name, [])
+        if targets_for_tg:
+            cfn_targets = []
+            for t_idx, target in enumerate(targets_for_tg):
+                tid = target['Id']
+                tport = target['Port']
+                # Create a parameter for the target ID (instance or IP)
+                if tid.startswith('i-'):
+                    param_name = f'{tg_logical}Target{t_idx}InstanceId'
+                    param_desc = f'Instance ID for target {t_idx} in {tg_name} (source: {tid})'
+                    param_type = 'String'
+                else:
+                    param_name = f'{tg_logical}Target{t_idx}Ip'
+                    param_desc = f'IP address for target {t_idx} in {tg_name} (source: {tid})'
+                    param_type = 'String'
+                t['Parameters'][param_name] = {
+                    'Type': param_type,
+                    'Default': tid,
+                    'Description': param_desc,
+                }
+                target_entry = OrderedDict()
+                target_entry['Id'] = {'Ref': param_name}
+                if tport:
+                    target_entry['Port'] = tport
+                cfn_targets.append(target_entry)
+            tg_props['Targets'] = cfn_targets
+
         tg_props['Tags'] = [
             {'Key': 'Name', 'Value': tg_name},
             {'Key': 'SourceTGArn', 'Value': tc.get('TargetGroupArn', '')},
-            {'Key': 'NOTE', 'Value': 'Targets registered post-deploy with DR instance IDs'},
         ]
         t['Resources'][tg_logical] = {
             'Type': 'AWS::ElasticLoadBalancingV2::TargetGroup',
@@ -1233,6 +1356,96 @@ def generate_network(resources, inventory, sg_id_to_logical):
         if needs_cert:
             resource_def['Condition'] = 'HasCert'
         t['Resources'][ln_logical] = resource_def
+
+    # ── Listener Rules (non-default only) ──
+    all_listener_rules = all_res.get('Listener Rules', [])
+    # Build listener ARN -> listener logical map
+    # (we know listener ARN from the inventory's ListenerArn field)
+    listener_arn_to_logical = {}
+    for ln_item in all_listeners:
+        lc = ln_item.get('config', {})
+        ln_arn = lc.get('ListenerArn', '')
+        lb_arn = lc.get('LoadBalancerArn', '')
+        lb_name = lb_arn_to_name.get(lb_arn, '')
+        if lb_name and ln_arn:
+            port = lc.get('Port', 443)
+            protocol = lc.get('Protocol', 'TCP')
+            listener_arn_to_logical[ln_arn] = f'{safe_logical_id(lb_name)}Listener{port}{protocol}'
+
+    for rule_item in all_listener_rules:
+        rc = rule_item.get('config', {})
+        priority = rc.get('Priority', 'default')
+        conditions = rc.get('Conditions', [])
+
+        # Skip default rules (already handled by listener DefaultActions)
+        if priority == 'default' or not conditions:
+            continue
+
+        rule_arn = rc.get('RuleArn', '')
+        # Derive listener ARN from rule ARN (remove the /rule-id suffix)
+        # Format: ...listener-rule/net/lb-name/lb-id/listener-id/rule-id
+        # Listener ARN: ...listener/net/lb-name/lb-id/listener-id
+        listener_arn = ''
+        if '/listener-rule/' in rule_arn:
+            parts = rule_arn.replace('/listener-rule/', '/listener/').rsplit('/', 1)[0]
+            listener_arn = parts
+        # Also check _parent_arn
+        if not listener_arn:
+            listener_arn = rc.get('ListenerArn', '') or rc.get('_parent_arn', '')
+
+        listener_logical = listener_arn_to_logical.get(listener_arn, '')
+        if not listener_logical:
+            continue
+
+        rule_logical = f'{listener_logical}Rule{priority}'
+
+        rule_props = OrderedDict()
+        rule_props['ListenerArn'] = {'Ref': listener_logical}
+        rule_props['Priority'] = int(priority) if str(priority).isdigit() else 1
+
+        # Conditions
+        cfn_conditions = []
+        for cond in conditions:
+            if not isinstance(cond, dict):
+                continue
+            cond_field = cond.get('Field', '')
+            cond_values = cond.get('Values', [])
+            if cond_field and cond_values:
+                cfn_cond = {'Field': cond_field, 'Values': cond_values}
+                # Handle host-header and path-pattern specific configs
+                if cond.get('HostHeaderConfig'):
+                    cfn_cond['HostHeaderConfig'] = cond['HostHeaderConfig']
+                if cond.get('PathPatternConfig'):
+                    cfn_cond['PathPatternConfig'] = cond['PathPatternConfig']
+                cfn_conditions.append(cfn_cond)
+        if not cfn_conditions:
+            continue
+        rule_props['Conditions'] = cfn_conditions
+
+        # Actions
+        actions = rc.get('Actions', [])
+        cfn_actions = []
+        for action in actions:
+            action_type = action.get('Type', 'forward')
+            tg_arn = action.get('TargetGroupArn', '')
+            tg_name = tg_arn_to_name.get(tg_arn, '')
+            if action_type == 'forward' and tg_name:
+                cfn_actions.append({
+                    'Type': 'forward',
+                    'TargetGroupArn': {'Ref': safe_logical_id(tg_name)},
+                })
+            elif action_type == 'redirect':
+                cfn_actions.append(action)
+            elif action_type == 'fixed-response':
+                cfn_actions.append(action)
+        if not cfn_actions:
+            continue
+        rule_props['Actions'] = cfn_actions
+
+        t['Resources'][rule_logical] = {
+            'Type': 'AWS::ElasticLoadBalancingV2::ListenerRule',
+            'Properties': rule_props,
+        }
 
     return t
 
@@ -1470,10 +1683,102 @@ def generate_supporting(resources, inventory, sg_id_to_logical):
             ]),
         }
 
+    # ── S3 Buckets ──
+    # Only render buckets WITHOUT cross-region replication.
+    # CRR-covered buckets already exist in DR with data replicated.
+    all_res_inv = inventory.get('resources', {})
+    s3_replication = all_res_inv.get('S3 Replication', [])
+    # Build set of bucket names that have CRR configured
+    crr_buckets = set()
+    for rep in s3_replication:
+        rep_config = rep.get('config', {})
+        # If replication config exists, this bucket has CRR
+        rules = rep_config.get('Rules', [])
+        if isinstance(rules, list) and rules:
+            bucket_name = rep.get('name', '') or rep.get('resource_id', '')
+            if bucket_name:
+                crr_buckets.add(bucket_name)
+
+    s3_versioning = all_res_inv.get('S3 Versioning', [])
+    bucket_versioning_map = {}
+    for sv in s3_versioning:
+        sv_config = sv.get('config', {})
+        sv_bucket = sv_config.get('BucketName', '') or sv.get('resource_id', '')
+        sv_status = sv_config.get('Status', '')
+        if sv_bucket:
+            bucket_versioning_map[sv_bucket] = sv_status
+
+    for bucket in s3_buckets:
+        bc = bucket.config
+        bucket_name = bc.get('BucketName', '') or bc.get('Name', '') or bucket.name or bucket.resource_id
+
+        # Skip CRR-covered buckets — they already exist in DR
+        if bucket_name in crr_buckets:
+            continue
+
+        logical = safe_logical_id(bucket_name)
+
+        # BucketName is globally unique — parameterize with dr- prefix
+        bucket_param = f'{logical}BucketName'
+        t['Parameters'][bucket_param] = {
+            'Type': 'String',
+            'Default': f'dr-{bucket_name}',
+            'Description': f'Bucket name in DR (source: {bucket_name}). Must be globally unique.',
+        }
+
+        bucket_props = OrderedDict()
+        bucket_props['BucketName'] = {'Ref': bucket_param}
+
+        # Versioning
+        versioning_status = bucket_versioning_map.get(bucket_name, '')
+        if versioning_status in ('Enabled', 'Suspended'):
+            bucket_props['VersioningConfiguration'] = {'Status': versioning_status}
+
+        # Encryption default
+        bucket_props['BucketEncryption'] = {
+            'ServerSideEncryptionConfiguration': [{
+                'ServerSideEncryptionByDefault': {'SSEAlgorithm': 'AES256'},
+            }],
+        }
+
+        bucket_props['Tags'] = [
+            {'Key': 'Name', 'Value': bucket_name},
+            {'Key': 'SourceBucket', 'Value': bucket_name},
+            {'Key': 'NoCRR', 'Value': 'This bucket had no cross-region replication in source'},
+        ]
+
+        t['Resources'][logical] = {
+            'Type': 'AWS::S3::Bucket',
+            'Properties': bucket_props,
+        }
+
     # ── CloudWatch Alarms ──
+    # Build set of EC2 instance IDs from full inventory (for skipping instance-bound alarms)
+    all_ec2 = all_res_inv.get('EC2 Instances', [])
+    all_instance_ids = set()
+    for ec2_item in all_ec2:
+        ec2_config = ec2_item.get('config', {})
+        iid = ec2_config.get('InstanceId', '') or ec2_item.get('resource_id', '')
+        if iid:
+            all_instance_ids.add(iid)
+
     for alarm in cw_alarms:
         ac = alarm.config
         alarm_name = ac.get('AlarmName', 'unnamed')
+
+        # Skip alarms with InstanceId dimensions matching any known EC2 instance
+        # (these will be rendered in the compute template instead)
+        dimensions = ac.get('Dimensions', [])
+        has_instance_dim = False
+        if isinstance(dimensions, list):
+            for dim in dimensions:
+                if (isinstance(dim, dict) and dim.get('Name') == 'InstanceId'
+                        and dim.get('Value', '') in all_instance_ids):
+                    has_instance_dim = True
+                    break
+        if has_instance_dim:
+            continue
+
         logical = safe_logical_id(alarm_name)
         props = OrderedDict()
         props['AlarmName'] = alarm_name
@@ -1488,7 +1793,6 @@ def generate_supporting(resources, inventory, sg_id_to_logical):
         props['ComparisonOperator'] = ac.get('ComparisonOperator', 'GreaterThanThreshold')
 
         # Dimensions (fix #2) — instance IDs will change in DR
-        dimensions = ac.get('Dimensions', [])
         if isinstance(dimensions, list) and dimensions:
             cfn_dims = []
             for dim in dimensions:
