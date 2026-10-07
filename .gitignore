@@ -50,6 +50,7 @@ aws_credentials*
 
 # ── Encoded/compressed customer data ──
 *.zip
+!FedRAMP-Portal-Idea.zip
 *.tar.gz
 *.tgz
 
