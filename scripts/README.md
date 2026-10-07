@@ -42,6 +42,12 @@ aws ssm send-command --document-name "DR-DHCP-Discovery" \
 ```
 See the document header comments for full result retrieval instructions.
 
+### Backup & Coverage Assessment (run against inventory output)
+
+| Script | Purpose | Key Arguments |
+|--------|---------|---------------|
+| `backup-coverage-report.py` | Backup opt-in, vault, plan, and coverage gap report from inventory | `--inventory`, `--stale-hours` |
+
 ### Verification (run after deployment or during DR test)
 
 | Script | Purpose | Key Arguments |
@@ -87,6 +93,17 @@ python3 scripts/map-all-internet-facing-resources.py --region us-gov-east-1
 
 python3 scripts/dns-to-target-walk.py \
   --zone-id Z0712928DILH42U83LKS --region us-gov-east-1
+```
+
+### Assess backup coverage from inventory output
+
+```bash
+python3 scripts/backup-coverage-report.py \
+  --inventory output/AccountName/us-gov-west-1/20260803-144711/inventory-us-gov-west-1.yaml
+
+python3 scripts/backup-coverage-report.py \
+  --inventory output/AccountName/us-gov-west-1/20260803-144711/inventory-us-gov-west-1.yaml \
+  --stale-hours 48
 ```
 
 ### Audit changes after a maintenance window

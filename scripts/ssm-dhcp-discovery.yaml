@@ -26,10 +26,7 @@
 # ═══════════════════════════════════════════════════════════════════
 #
 #   # Option 1: Target all instances with SSM agent (most reliable)
-#   aws ssm send-command \
-#     --document-name "DR-DHCP-Discovery" \
-#     --targets "Key=instanceids,Values=$(aws ssm describe-instance-information \
-#       --query 'InstanceInformationList[].InstanceId' --output text | tr '\t' ',')"
+#   aws ssm send-command --document-name "DR-DHCP-Discovery" --targets "Key=instanceids,Values=$(aws ssm describe-instance-information --query 'InstanceInformationList[].InstanceId' --output text | tr '\t' ',')"
 #
 #   # Option 2: Target by tag (if all instances share a tag)
 #   aws ssm send-command \

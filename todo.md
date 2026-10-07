@@ -101,9 +101,45 @@ Decision: NOT Sceptre — we need dynamic, discovery-driven deployment.
 
 Validate generated templates with cfn-lint before writing.
 
-### 5. Import Mode
+### 5. Connectivity Verification Script
+
+Non-interactive `scripts/verify-connectivity.py` that takes inventory +
+deployed stack outputs and validates all expected traffic paths:
+- For each instance: verify route table has path to its targets (RDS, FSx, NAT, TGW)
+- For each SG: verify rules permit the traffic the instance needs
+- For each LB: verify TG health checks pass
+- For each VPC Endpoint: verify reachability from instance subnets
+
+Inspired by Travis Stabler's FWR tool (interactive CLI for manual spot-checks).
+Our version is automated, inventory-driven, and produces a pass/fail report.
+
+### 6. Import Mode
 
 The `--mode import` flag (exact state reproduction) needs testing.
+
+### 7. Multi-Account Discovery (AWSAccountWalker integration)
+
+Use `AWSAccountWalker` (`~/Chappies-Tools/AWSAccountWalker/`) to run discovery
+across an entire AWS Organization. Wrap `deep_discover.py` logic in a
+region_task function — produces per-account inventories in one pass.
+
+Prerequisite: resolve auth flow (see below).
+
+### 8. Authentication Improvement
+
+Current: paste temp creds into terminal (1-hour expiry, source varies by customer).
+Goal: seamless credential flow that doesn't interrupt long-running scripts.
+
+Options under consideration:
+- `credential_process` in `~/.aws/config` calling a script that fetches
+  from whatever credential source is available (SSO portal, customer-provided)
+- Hybrid workflow: discovery in CloudShell (native creds), IaC generation
+  locally (no creds needed — pure YAML transformation)
+- AutoCreds SAM app (`~/Chappies-Tools/AutoCreds/`) as credential provider
+
+Note: `iac_blueprint.py` needs NO AWS credentials — it only reads the
+inventory YAML. Only discovery steps (1-3) need live API access. Pipeline
+completes in ~3 minutes so 1-hour creds are sufficient today.
 
 ---
 

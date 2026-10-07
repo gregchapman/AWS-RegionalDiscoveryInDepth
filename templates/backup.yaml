@@ -67,3 +67,14 @@ operations:
       - ResourceArn
       - ResourceType
       - LastBackupTime
+
+  - name: Region Settings
+    method: describe_region_settings
+    paginator: false
+    result_key: _response
+    id_field: _singleton
+    key_prefix: bkregion
+    dr_note: "Shows which resource types are opted-in for Backup. Services not opted-in cannot be backed up."
+    config_fields:
+      - ResourceTypeOptInPreference
+      - ResourceTypeManagementPreference

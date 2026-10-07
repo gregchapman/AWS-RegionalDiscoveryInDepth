@@ -265,6 +265,25 @@ Follow `DEPLOY.md` commands in order. For each stack:
   python3 scripts/dns-to-target-walk.py --zone-id <zone-id> --region <dr-region>
   ```
 
+#### Manual Connectivity Validation (FWR-style checks)
+
+For targeted route and security group verification, use Travis Stabler's
+FWR utility (available internally at `C:\RGS-Code\stabler-fwr\fwr\`):
+
+```bash
+python3 app.py
+# Select: 0 = Route Checker, 1 = SG Checker, 2 = Common SGs, 3 = List instances in SG
+```
+
+This is interactive — good for spot-checking specific paths after deployment.
+It traces routes through route tables and verifies SG rules permit traffic,
+including checking referenced SGs and prefix lists.
+
+**Future:** An automated non-interactive version (`scripts/verify-connectivity.py`)
+that takes our inventory + deployed stack outputs and validates all expected
+traffic paths without manual input. Same logic (describe_route_tables,
+describe_security_groups) but driven by inventory data. Planned.
+
 ### Application Checks
 
 - [ ] Database connectivity from compute tier
